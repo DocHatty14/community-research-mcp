@@ -19,7 +19,8 @@ import json
 import asyncio
 import hashlib
 import time
-from typing import Optional, List, Dict, Any, Literal, dataclass
+from typing import Optional, List, Dict, Any, Literal
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import re
