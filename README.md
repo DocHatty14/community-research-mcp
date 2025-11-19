@@ -1,4 +1,5 @@
 # Community Research MCP
+![download](https://github.com/user-attachments/assets/45451d4b-170f-459c-a74e-998668af4555)
 
 <div align="center">
 
