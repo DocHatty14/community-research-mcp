@@ -9,8 +9,6 @@ import asyncio
 from datetime import datetime
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
-from mcp import Context
-
 from streaming_capabilities import (
     ProgressiveAggregator,
     StreamingResult,
@@ -69,7 +67,7 @@ async def parallel_streaming_search(
     search_functions: Dict[str, Callable],
     query: str,
     language: str,
-    context: Optional[Context] = None,
+    context: Optional[Any] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Execute multiple searches in parallel and yield results as they arrive.
@@ -188,7 +186,7 @@ async def streaming_search_with_synthesis(
     language: str,
     goal: Optional[str] = None,
     current_setup: Optional[str] = None,
-    context: Optional[Context] = None,
+    context: Optional[Any] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Execute streaming search and synthesize results with LLM.
@@ -262,7 +260,7 @@ async def get_all_search_results_streaming(
     search_hackernews_func,
     query: str,
     language: str,
-    context: Optional[Context] = None,
+    context: Optional[Any] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Convenience function to stream results from all default search sources.

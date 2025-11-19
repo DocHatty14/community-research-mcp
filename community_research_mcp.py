@@ -30,7 +30,6 @@ from typing import Any, Dict, List, Literal, Optional
 
 import httpx
 from bs4 import BeautifulSoup
-from mcp import Context
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -2890,7 +2889,7 @@ async def streaming_community_search(
     topic: str,
     goal: Optional[str] = None,
     current_setup: Optional[str] = None,
-    context: Context = None,
+    context: Optional[Any] = None,
 ) -> str:
     """
     Search community resources with REAL-TIME STREAMING results.
@@ -3004,7 +3003,7 @@ async def streaming_community_search(
     },
 )
 async def parallel_multi_source_search(
-    query: str, language: str, sources: Optional[str] = "all", context: Context = None
+    query: str, language: str, sources: Optional[str] = "all", context: Optional[Any] = None
 ) -> str:
     """
     Execute searches across multiple sources in PARALLEL with real-time updates.
