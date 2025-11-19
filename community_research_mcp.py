@@ -361,6 +361,28 @@ def get_cache_key(tool_name: str, **params) -> str:
     return hashlib.md5(f"{tool_name}:{param_str}".encode()).hexdigest()
 
 
+# Cache file path
+CACHE_FILE = Path(".community_research_cache.json")
+
+def load_cache() -> Dict[str, Any]:
+    """Load cache from disk."""
+    if CACHE_FILE.exists():
+        try:
+            return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception as e:
+            logging.warning(f"Failed to load cache: {e}")
+    return {}
+
+def save_cache() -> None:
+    """Save cache to disk."""
+    try:
+        CACHE_FILE.write_text(json.dumps(_cache, indent=2), encoding="utf-8")
+    except Exception as e:
+        logging.warning(f"Failed to save cache: {e}")
+
+# Initialize cache from disk
+_cache: Dict[str, Dict[str, Any]] = load_cache()
+
 def get_cached_result(cache_key: str) -> Optional[str]:
     """Retrieve cached result if not expired."""
     if cache_key in _cache:
@@ -369,12 +391,13 @@ def get_cached_result(cache_key: str) -> Optional[str]:
             return cached["result"]
         else:
             del _cache[cache_key]
+            save_cache() # Clean up expired
     return None
-
 
 def set_cached_result(cache_key: str, result: str) -> None:
     """Store result in cache with timestamp."""
     _cache[cache_key] = {"result": result, "timestamp": time.time()}
+    save_cache()
 
 
 def check_rate_limit(tool_name: str) -> bool:
@@ -450,14 +473,14 @@ async def search_stackoverflow(query: str, language: str) -> List[Dict[str, Any]
             data = response.json()
 
             results = []
-            for item in data.get("items", [])[:5]:  # Top 5 results
+            for item in data.get("items", [])[:15]:  # Top 15 results
                 results.append(
                     {
                         "title": item.get("title", ""),
                         "url": item.get("link", ""),
                         "score": item.get("score", 0),
                         "answer_count": item.get("answer_count", 0),
-                        "snippet": item.get("body", "")[:500],
+                        "snippet": item.get("body", "")[:1000],
                     }
                 )
             return results
@@ -473,7 +496,7 @@ async def search_github(query: str, language: str) -> List[Dict[str, Any]]:
             "q": f"{query} language:{language} is:issue",
             "sort": "reactions",
             "order": "desc",
-            "per_page": 5,
+            "per_page": 15,
         }
 
         async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
@@ -489,7 +512,7 @@ async def search_github(query: str, language: str) -> List[Dict[str, Any]]:
                         "url": item.get("html_url", ""),
                         "state": item.get("state", ""),
                         "comments": item.get("comments", 0),
-                        "snippet": (item.get("body", "") or "")[:500],
+                        "snippet": (item.get("body", "") or "")[:1000],
                     }
                 )
             return results
@@ -525,13 +548,13 @@ async def search_reddit(query: str, language: str) -> List[Dict[str, Any]]:
                     try:
                         # Use authenticated client for better results and higher rate limits
                         async for submission in reddit_client.p.subreddit.search(
-                            sr, query, limit=3, sort="relevance"
+                            sr, query, limit=10, sort="relevance"
                         ):
                             # Get post content based on type
                             snippet = ""
                             if hasattr(submission, "body"):
                                 snippet = (
-                                    submission.body[:500] if submission.body else ""
+                                    submission.body[:1000] if submission.body else ""
                                 )
 
                             results.append(
@@ -545,8 +568,8 @@ async def search_reddit(query: str, language: str) -> List[Dict[str, Any]]:
                                 }
                             )
 
-                            # Limit to 5 total results
-                            if len(results) >= 5:
+                            # Limit to 15 total results
+                            if len(results) >= 15:
                                 break
 
                     except Exception as subreddit_error:
@@ -572,7 +595,7 @@ async def search_reddit(query: str, language: str) -> List[Dict[str, Any]]:
 
         # Fallback to unauthenticated public API
         url = f"https://www.reddit.com/r/{subreddit}/search.json"
-        params = {"q": query, "sort": "relevance", "limit": 5, "restrict_sr": "on"}
+        params = {"q": query, "sort": "relevance", "limit": 15, "restrict_sr": "on"}
 
         headers = {"User-Agent": "CommunityResearchMCP/1.0"}
 
@@ -590,7 +613,7 @@ async def search_reddit(query: str, language: str) -> List[Dict[str, Any]]:
                         "url": f"https://www.reddit.com{post.get('permalink', '')}",
                         "score": post.get("score", 0),
                         "comments": post.get("num_comments", 0),
-                        "snippet": post.get("selftext", "")[:500],
+                        "snippet": post.get("selftext", "")[:1000],
                         "authenticated": False,
                     }
                 )
@@ -617,7 +640,7 @@ async def search_hackernews(query: str) -> List[Dict[str, Any]]:
             data = response.json()
 
             results = []
-            for item in data.get("hits", [])[:3]:  # Top 3 results
+            for item in data.get("hits", [])[:10]:  # Top 10 results
                 results.append(
                     {
                         "title": item.get("title", ""),
@@ -635,6 +658,26 @@ async def search_hackernews(query: str) -> List[Dict[str, Any]]:
         return []
 
 
+async def search_duckduckgo(query: str) -> List[Dict[str, Any]]:
+    """Search DuckDuckGo and return structured results."""
+    try:
+        # Use the existing ddg_searcher instance
+        results = await ddg_searcher.search(query, max_results=15)
+        
+        structured_results = []
+        for item in results:
+            structured_results.append({
+                "title": item.title,
+                "url": item.link,
+                "snippet": item.snippet,
+                "source": "duckduckgo"
+            })
+        return structured_results
+    except Exception as e:
+        logging.error(f"DuckDuckGo search failed: {str(e)}")
+        return []
+
+
 async def aggregate_search_results(query: str, language: str) -> Dict[str, Any]:
     """Run all searches in parallel and aggregate results."""
     tasks = [
@@ -642,6 +685,7 @@ async def aggregate_search_results(query: str, language: str) -> Dict[str, Any]:
         search_github(query, language),
         search_reddit(query, language),
         search_hackernews(query),
+        search_duckduckgo(f"{language} {query}"),
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -651,6 +695,7 @@ async def aggregate_search_results(query: str, language: str) -> Dict[str, Any]:
         "github": results[1] if isinstance(results[1], list) else [],
         "reddit": results[2] if isinstance(results[2], list) else [],
         "hackernews": results[3] if isinstance(results[3], list) else [],
+        "duckduckgo": results[4] if isinstance(results[4], list) else [],
     }
 
 
@@ -694,22 +739,25 @@ Language: {language}
 Search Results:
 {json.dumps(search_results, indent=2)}
 
-Analyze these search results and extract 3-5 actionable recommendations. For each recommendation:
+Analyze these search results and provide a ROBUST, VERBOSE, and COMPREHENSIVE set of recommendations. 
+Do not be brief. Be thorough. The user wants deep technical insight.
 
-1. **Problem**: What specific problem does this solve (quote real users)
-2. **Solution**: Step-by-step implementation with working code examples
-3. **Benefit**: Measurable improvements (performance, simplicity, reliability)
-4. **Evidence**: GitHub stars, Stack Overflow votes, community adoption
-5. **Difficulty**: Easy/Medium/Hard
-6. **Gotchas**: Edge cases and warnings from the community
+For each recommendation:
+
+1. **Problem**: What specific problem does this solve? Quote real users if possible.
+2. **Solution**: Step-by-step implementation with working code examples. Explain the code in detail.
+3. **Benefit**: Measurable improvements (performance, simplicity, reliability).
+4. **Evidence**: GitHub stars, Stack Overflow votes, community adoption.
+5. **Difficulty**: Easy/Medium/Hard.
+6. **Gotchas**: Edge cases, warnings, and potential pitfalls.
 
 Return ONLY valid JSON with this structure (no markdown, no backticks):
 {{
   "findings": [
     {{
-      "title": "Short descriptive title",
-      "problem": "Problem description with user quotes",
-      "solution": "Detailed solution with code",
+      "title": "Descriptive title",
+      "problem": "Detailed problem description",
+      "solution": "Detailed solution with extensive code",
       "benefit": "Measurable benefits",
       "evidence": "Community validation",
       "difficulty": "Easy|Medium|Hard",
@@ -1051,14 +1099,22 @@ class ResearchPlanner:
             Programming Language: {language}
             Goal: {goal or "Not specified"}
 
-            Please break this research query into a structured plan with:
-            1. Research phases (discovery, analysis, validation)
-            2. Specific search strategies for each phase
-            3. Source prioritization (which platforms to search first)
-            4. Synthesis approach (how to combine findings)
-            5. Expected deliverables
-
-            Consider the complexity and specificity of the query to determine the optimal research approach.
+            Please break this research query into a structured plan.
+            Return ONLY valid JSON with this exact structure (no markdown, no backticks):
+            {{
+                "plan": {{
+                    "phases": [
+                        {{
+                            "name": "Phase Name",
+                            "description": "Phase Description",
+                            "sources": ["source1", "source2"]
+                        }}
+                    ],
+                    "strategy": "Overall strategy description",
+                    "complexity": "low|medium|high",
+                    "full_analysis": "Detailed analysis text"
+                }}
+            }}
             """
 
             # Select appropriate model for planning
@@ -1132,23 +1188,36 @@ class ResearchPlanner:
 
             text = data["candidates"][0]["content"]["parts"][0]["text"]
 
-            # Parse the planning response
-            return {
-                "plan": {
-                    "phases": [
-                        {
-                            "name": "Discovery",
-                            "description": "Search community sources",
-                        },
-                        {"name": "Analysis", "description": "Synthesize findings"},
-                        {"name": "Validation", "description": "Cross-check results"},
-                    ],
-                    "strategy": text[:500] + ("..." if len(text) > 500 else ""),
-                    "complexity": "medium",
-                    "full_analysis": text,
-                },
-                "provider": "gemini",
-            }
+            # Clean up markdown code blocks if present
+            text = (
+                text.replace("```json\n", "")
+                .replace("\n```", "")
+                .replace("```", "")
+                .strip()
+            )
+
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                # Fallback if JSON parsing fails
+                logging.warning(f"Failed to parse planning JSON: {text[:100]}...")
+                return {
+                    "plan": {
+                        "phases": [
+                            {
+                                "name": "Discovery",
+                                "description": "Search community sources",
+                            },
+                            {"name": "Analysis", "description": "Synthesize findings"},
+                            {"name": "Validation", "description": "Cross-check results"},
+                        ],
+                        "strategy": text[:500] + ("..." if len(text) > 500 else ""),
+                        "complexity": "medium",
+                        "full_analysis": text,
+                    },
+                    "provider": "gemini",
+                    "parsing_error": True
+                }
 
     async def _call_planning_model_openai(
         self, api_key: str, prompt: str
@@ -1282,13 +1351,43 @@ async def synthesize_with_multi_model(
 
                 # Don't validate with the same provider
                 if validation_provider != provider:
+                    # Create validation prompt with primary findings
+                    validation_prompt = f"""
+                    CRITICAL VALIDATION TASK
+                    
+                    You are an expert technical reviewer. Your goal is to validate the following research findings.
+                    
+                    Primary Findings:
+                    {json.dumps(primary_result, indent=2)}
+                    
+                    Search Results:
+                    {json.dumps(search_results, indent=2)}
+                    
+                    Please analyze the primary findings and provide:
+                    1. Verification: Are the solutions correct and optimal?
+                    2. Gaps: What is missing or overlooked?
+                    3. Risks: Are there security or performance risks not mentioned?
+                    4. Alternatives: Are there better approaches?
+                    
+                    Return your critique in JSON format.
+                    """
+                    
+                    # We reuse synthesize_with_llm but with a special flag or just call the model directly
+                    # For simplicity and to reuse the robust prompt structure, we'll call synthesize_with_llm 
+                    # but inject the validation context into the query/goal to influence the prompt.
+                    
                     validation_result = await synthesize_with_llm(
-                        search_results, query, language, goal, current_setup
+                        search_results, 
+                        query=f"VALIDATE AND CRITIQUE: {query}", 
+                        language=language, 
+                        goal=f"Critique these findings: {json.dumps(primary_result.get('findings', []))[:1000]}...",
+                        current_setup=current_setup
                     )
+                    
                     primary_result["orchestration"]["validation"] = {
                         "provider": validation_provider,
-                        "findings_count": len(validation_result.get("findings", [])),
-                        "validation_status": "completed",
+                        "status": "completed",
+                        "critique": validation_result.get("findings", [])
                     }
                 else:
                     primary_result["orchestration"]["validation"] = {
@@ -2959,6 +3058,7 @@ async def streaming_community_search(
             "github": search_github,
             "reddit": search_reddit,
             "hackernews": search_hackernews,
+            "duckduckgo": search_duckduckgo, # Added duckduckgo
         }
 
         # Stream results and synthesis
@@ -3038,7 +3138,7 @@ async def parallel_multi_source_search(
 
     # Parse sources
     if sources == "all":
-        source_list = ["stackoverflow", "github", "reddit", "hackernews"]
+        source_list = ["stackoverflow", "github", "reddit", "hackernews", "duckduckgo"]
     else:
         source_list = [s.strip() for s in sources.split(",")]
 
@@ -3048,6 +3148,7 @@ async def parallel_multi_source_search(
         "github": search_github,
         "reddit": search_reddit,
         "hackernews": search_hackernews,
+        "duckduckgo": search_duckduckgo,
     }
 
     # Filter to requested sources
@@ -3079,6 +3180,7 @@ async def parallel_multi_source_search(
             search_functions.get("github"),
             search_functions.get("reddit"),
             search_functions.get("hackernews"),
+            search_functions.get("duckduckgo"),
             query=query,
             language=language,
             context=context,
@@ -3105,10 +3207,41 @@ async def parallel_multi_source_search(
         return json.dumps({"error": str(e), "results": {}}, indent=2)
 
 
+def validate_environment():
+    """Validate environment configuration on startup."""
+    print("\n🔍 Validating Community Research MCP Environment...")
+    
+    # Check API keys
+    keys = {
+        "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY"),
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
+        "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
+        "REDDIT_CLIENT_ID": os.getenv("REDDIT_CLIENT_ID"),
+    }
+    
+    active_keys = [k for k, v in keys.items() if v]
+    if not active_keys:
+        print("⚠️  WARNING: No API keys found in environment!")
+        print("   Please set at least one LLM provider key (GEMINI_API_KEY, etc.)")
+        print("   in your .env file or environment variables.")
+    else:
+        print(f"✅ Found {len(active_keys)} active API keys: {', '.join(active_keys)}")
+
+    # Check streaming availability
+    if STREAMING_AVAILABLE:
+        print("✅ Streaming capabilities: Active")
+    else:
+        print("⚠️  Streaming capabilities: Inactive (missing dependencies)")
+
+    print("🚀 System ready!\n")
+
 # ============================================================================
 # Main Entry Point
 # ============================================================================
 
 if __name__ == "__main__":
+    # Validate environment
+    validate_environment()
+    
     # Run the MCP server
     mcp.run()

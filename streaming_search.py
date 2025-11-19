@@ -104,6 +104,10 @@ async def parallel_streaming_search(
             task = asyncio.create_task(
                 search_with_streaming(search_func, source_name, result_queue, query)
             )
+        elif source_name == "duckduckgo":
+            task = asyncio.create_task(
+                search_with_streaming(search_func, source_name, result_queue, query)
+            )
         else:
             task = asyncio.create_task(
                 search_with_streaming(
@@ -258,6 +262,7 @@ async def get_all_search_results_streaming(
     search_github_func,
     search_reddit_func,
     search_hackernews_func,
+    search_duckduckgo_func,
     query: str,
     language: str,
     context: Optional[Any] = None,
@@ -268,10 +273,10 @@ async def get_all_search_results_streaming(
     Yields progressive updates as results arrive.
     """
     search_functions = {
-        "stackoverflow": search_stackoverflow_func,
         "github": search_github_func,
         "reddit": search_reddit_func,
         "hackernews": search_hackernews_func,
+        "duckduckgo": search_duckduckgo_func,
     }
 
     async for update in parallel_streaming_search(
