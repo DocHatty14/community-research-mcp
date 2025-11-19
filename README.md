@@ -1,4 +1,5 @@
-# Community Research MCP
+![download](https://github.com/user-attachments/assets/ce5d13c5-5db7-4684-beb4-d43425b86b08)
+
 ### *AI-Powered Research Revolution for Developers*
 
 > **"Where official documentation ends and actual solutions begin."**
