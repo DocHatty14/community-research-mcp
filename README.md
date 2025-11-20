@@ -1,4 +1,4 @@
-# Community Research MCP
+![download](https://github.com/user-attachments/assets/45451d4b-170f-459c-a74e-998668af4555)
 
 <div align="center">
 
@@ -17,7 +17,7 @@
 
 ## 🧠 The "Street Smarts" Engine
 
-Most AI tools give you the "textbook" answer—the one that works in theory but fails in production. **Community Research MCP** is different. It bypasses generic training data to tap directly into the **living wisdom of the developer community**.
+Most AI tools give you the "textbook" answer. The one that works in theory but fails in production. **Community Research MCP** is different. It bypasses generic training data to tap directly into the **living wisdom of the developer community**.
 
 We scrape, aggregate, and synthesize the **battle-tested workarounds**, **undocumented hacks**, and **hard-earned lessons** from:
 
