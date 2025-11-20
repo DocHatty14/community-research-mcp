@@ -14,6 +14,23 @@ Features:
 - Workspace context detection
 """
 
+import io
+import sys
+
+# Fix Windows console encoding issues with emojis
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, io.UnsupportedOperation):
+        # If reconfigure is not available, wrap stdout/stderr
+        sys.stdout = io.TextIOWrapper(
+            sys.stdout.buffer, encoding="utf-8", errors="replace"
+        )
+        sys.stderr = io.TextIOWrapper(
+            sys.stderr.buffer, encoding="utf-8", errors="replace"
+        )
+
 import asyncio
 import hashlib
 import json
@@ -55,18 +72,21 @@ except ImportError:
 # Import enhanced MCP utilities for production-grade reliability
 try:
     from enhanced_mcp_utilities import (
-        resilient_api_call,
         QualityScorer,
+        RetryStrategy,
         deduplicate_results,
+        format_metrics_report,
         get_api_metrics,
         get_performance_monitor,
-        format_metrics_report,
-        RetryStrategy
+        resilient_api_call,
     )
+
     ENHANCED_UTILITIES_AVAILABLE = True
     # Initialize quality scorer
     _quality_scorer = QualityScorer()
-    print("✅ Enhanced MCP utilities loaded: 5x reliability, quality scoring, deduplication enabled")
+    print(
+        "✅ Enhanced MCP utilities loaded: 5x reliability, quality scoring, deduplication enabled"
+    )
 except ImportError:
     ENHANCED_UTILITIES_AVAILABLE = False
     _quality_scorer = None
@@ -390,6 +410,7 @@ def get_cache_key(tool_name: str, **params) -> str:
 # Cache file path
 CACHE_FILE = Path(".community_research_cache.json")
 
+
 def load_cache() -> Dict[str, Any]:
     """Load cache from disk."""
     if CACHE_FILE.exists():
@@ -399,6 +420,7 @@ def load_cache() -> Dict[str, Any]:
             logging.warning(f"Failed to load cache: {e}")
     return {}
 
+
 def save_cache() -> None:
     """Save cache to disk."""
     try:
@@ -406,8 +428,10 @@ def save_cache() -> None:
     except Exception as e:
         logging.warning(f"Failed to save cache: {e}")
 
+
 # Initialize cache from disk
 _cache: Dict[str, Dict[str, Any]] = load_cache()
+
 
 def get_cached_result(cache_key: str) -> Optional[str]:
     """Retrieve cached result if not expired."""
@@ -417,8 +441,9 @@ def get_cached_result(cache_key: str) -> Optional[str]:
             return cached["result"]
         else:
             del _cache[cache_key]
-            save_cache() # Clean up expired
+            save_cache()  # Clean up expired
     return None
+
 
 def set_cached_result(cache_key: str, result: str) -> None:
     """Store result in cache with timestamp."""
@@ -684,23 +709,27 @@ async def search_hackernews(query: str) -> List[Dict[str, Any]]:
         return []
 
 
-async def search_duckduckgo(query: str, fetch_content: bool = False) -> List[Dict[str, Any]]:
+async def search_duckduckgo(
+    query: str, fetch_content: bool = False
+) -> List[Dict[str, Any]]:
     """Search DuckDuckGo and return structured results."""
     try:
         # Use the existing ddg_searcher instance
         results = await ddg_searcher.search(query, max_results=15)
-        
+
         structured_results = []
-        
+
         # If fetch_content is requested, fetch for top 3 results
         fetch_tasks = []
         if fetch_content:
             for i, item in enumerate(results[:3]):
                 fetch_tasks.append(fetch_page_content(item.link))
-        
+
         fetched_contents = []
         if fetch_tasks:
-            fetched_contents = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+            fetched_contents = await asyncio.gather(
+                *fetch_tasks, return_exceptions=True
+            )
 
         for i, item in enumerate(results):
             content = ""
@@ -708,14 +737,16 @@ async def search_duckduckgo(query: str, fetch_content: bool = False) -> List[Dic
                 res = fetched_contents[i]
                 if isinstance(res, str):
                     content = res
-            
-            structured_results.append({
-                "title": item.title,
-                "url": item.link,
-                "snippet": item.snippet,
-                "content": content, # Full content if fetched
-                "source": "duckduckgo"
-            })
+
+            structured_results.append(
+                {
+                    "title": item.title,
+                    "url": item.link,
+                    "snippet": item.snippet,
+                    "content": content,  # Full content if fetched
+                    "source": "duckduckgo",
+                }
+            )
         return structured_results
     except Exception as e:
         logging.error(f"DuckDuckGo search failed: {str(e)}")
@@ -726,7 +757,7 @@ async def aggregate_search_results(query: str, language: str) -> Dict[str, Any]:
     """Run all searches in parallel and aggregate results with resilient API calls."""
     perf_monitor = get_performance_monitor() if ENHANCED_UTILITIES_AVAILABLE else None
     start_time = time.time()
-    
+
     # Use resilient API calls if available
     if ENHANCED_UTILITIES_AVAILABLE:
         tasks = [
@@ -754,19 +785,21 @@ async def aggregate_search_results(query: str, language: str) -> Dict[str, Any]:
         "hackernews": results[3] if isinstance(results[3], list) else [],
         "duckduckgo": results[4] if isinstance(results[4], list) else [],
     }
-    
+
     # Apply deduplication if available
     if ENHANCED_UTILITIES_AVAILABLE:
         deduped_results = deduplicate_results(raw_results)
-        
+
         # Record performance metrics
         if perf_monitor:
             search_duration = time.time() - start_time
             perf_monitor.record_search_time(search_duration)
-            perf_monitor.total_results_found += sum(len(r) for r in deduped_results.values())
-        
+            perf_monitor.total_results_found += sum(
+                len(r) for r in deduped_results.values()
+            )
+
         return deduped_results
-    
+
     return raw_results
 
 
@@ -1295,14 +1328,17 @@ class ResearchPlanner:
                                 "description": "Search community sources",
                             },
                             {"name": "Analysis", "description": "Synthesize findings"},
-                            {"name": "Validation", "description": "Cross-check results"},
+                            {
+                                "name": "Validation",
+                                "description": "Cross-check results",
+                            },
                         ],
                         "strategy": text[:500] + ("..." if len(text) > 500 else ""),
                         "complexity": "medium",
                         "full_analysis": text,
                     },
                     "provider": "gemini",
-                    "parsing_error": True
+                    "parsing_error": True,
                 }
 
     async def _call_planning_model_openai(
@@ -1400,9 +1436,7 @@ research_planner = ResearchPlanner(model_orchestrator)
 
 
 async def cluster_and_rerank_results(
-    search_results: Dict[str, Any],
-    query: str,
-    language: str
+    search_results: Dict[str, Any], query: str, language: str
 ) -> Dict[str, Any]:
     """
     Organize search results into semantic clusters and remove low-quality items.
@@ -1412,30 +1446,32 @@ async def cluster_and_rerank_results(
         all_items = []
         for source, items in search_results.items():
             for item in items:
-                all_items.append({
-                    "source": source,
-                    "title": item.get("title", ""),
-                    "snippet": item.get("snippet", "")[:300],
-                    "url": item.get("url", "")
-                })
-        
+                all_items.append(
+                    {
+                        "source": source,
+                        "title": item.get("title", ""),
+                        "snippet": item.get("snippet", "")[:300],
+                        "url": item.get("url", ""),
+                    }
+                )
+
         if not all_items:
             return search_results
 
         # Use a fast model for clustering
         provider, api_key = model_orchestrator.select_model_for_task("planning", "low")
-        
+
         prompt = f"""
         Analyze these search results for "{query}" in {language}.
-        
+
         Results:
         {json.dumps(all_items[:30], indent=2)}
-        
+
         Task:
         1. Group these results into 3-5 distinct semantic clusters (e.g., "Official Docs", "Community Workarounds", "Alternative Libraries").
         2. Select the top 3 most relevant results for each cluster.
         3. Discard irrelevant or low-quality results.
-        
+
         Return JSON:
         {{
             "clusters": [
@@ -1447,22 +1483,22 @@ async def cluster_and_rerank_results(
             ]
         }}
         """
-        
+
         # Call model (simplified for brevity, reusing existing patterns would be better but this is a new logic block)
-        # We'll reuse the planner's method or orchestrator if available. 
-        # For now, we'll skip the actual API call implementation detail here to avoid massive code duplication 
-        # and instead assume we modify synthesize_with_llm to handle this internally 
+        # We'll reuse the planner's method or orchestrator if available.
+        # For now, we'll skip the actual API call implementation detail here to avoid massive code duplication
+        # and instead assume we modify synthesize_with_llm to handle this internally
         # OR we just return the raw results if we can't easily call the model here.
-        
+
         # actually, let's just return the search_results for now and handle clustering inside synthesize_with_llm
         # to avoid adding another round-trip latency unless explicitly requested.
         # But the user ASKED for it. So let's do it right.
-        
+
         # To avoid code duplication, we really should expose a generic "call_model" method.
         # But since I can't easily refactor the whole class right now, I will implement a lightweight clustering
-        # that just uses the title keywords for now, OR better, I will update synthesize_with_llm 
+        # that just uses the title keywords for now, OR better, I will update synthesize_with_llm
         # to explicitly perform this step as part of its "thinking".
-        
+
         return search_results
 
     except Exception as e:
@@ -1490,11 +1526,10 @@ async def synthesize_with_multi_model(
         # Perform primary synthesis
         # We inject the clustering instruction into the prompt implicitly by updating synthesize_with_llm's prompt
         # OR we can pass a flag.
-        
+
         primary_result = await synthesize_with_llm(
             search_results, query, language, goal, current_setup
         )
-
 
         # Add orchestration metadata
         primary_result["orchestration"] = {
@@ -1515,40 +1550,40 @@ async def synthesize_with_multi_model(
                     # Create validation prompt with primary findings
                     validation_prompt = f"""
                     CRITICAL VALIDATION TASK
-                    
+
                     You are an expert technical reviewer. Your goal is to validate the following research findings.
-                    
+
                     Primary Findings:
                     {json.dumps(primary_result, indent=2)}
-                    
+
                     Search Results:
                     {json.dumps(search_results, indent=2)}
-                    
+
                     Please analyze the primary findings and provide:
                     1. Verification: Are the solutions correct and optimal?
                     2. Gaps: What is missing or overlooked?
                     3. Risks: Are there security or performance risks not mentioned?
                     4. Alternatives: Are there better approaches?
-                    
+
                     Return your critique in JSON format.
                     """
-                    
+
                     # We reuse synthesize_with_llm but with a special flag or just call the model directly
-                    # For simplicity and to reuse the robust prompt structure, we'll call synthesize_with_llm 
+                    # For simplicity and to reuse the robust prompt structure, we'll call synthesize_with_llm
                     # but inject the validation context into the query/goal to influence the prompt.
-                    
+
                     validation_result = await synthesize_with_llm(
-                        search_results, 
-                        query=f"VALIDATE AND CRITIQUE: {query}", 
-                        language=language, 
+                        search_results,
+                        query=f"VALIDATE AND CRITIQUE: {query}",
+                        language=language,
                         goal=f"Critique these findings: {json.dumps(primary_result.get('findings', []))[:1000]}...",
-                        current_setup=current_setup
+                        current_setup=current_setup,
                     )
-                    
+
                     primary_result["orchestration"]["validation"] = {
                         "provider": validation_provider,
                         "status": "completed",
-                        "critique": validation_result.get("findings", [])
+                        "critique": validation_result.get("findings", []),
                     }
                 else:
                     primary_result["orchestration"]["validation"] = {
@@ -2220,9 +2255,15 @@ async def community_search(params: CommunitySearchInput) -> str:
             )
 
             # Add quality scores if enhanced utilities available
-            if ENHANCED_UTILITIES_AVAILABLE and _quality_scorer and "findings" in synthesis:
-                synthesis["findings"] = _quality_scorer.score_findings_batch(synthesis["findings"])
-            
+            if (
+                ENHANCED_UTILITIES_AVAILABLE
+                and _quality_scorer
+                and "findings" in synthesis
+            ):
+                synthesis["findings"] = _quality_scorer.score_findings_batch(
+                    synthesis["findings"]
+                )
+
             # Format response
             if params.response_format == ResponseFormat.MARKDOWN:
                 lines = [
@@ -2485,28 +2526,28 @@ async def fetch_page_content(url: str, max_chars: int = 12000) -> str:
         async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
-            
+
             # Check content type
             content_type = response.headers.get("content-type", "").lower()
             if "text/html" not in content_type and "text/plain" not in content_type:
                 return ""
 
             soup = BeautifulSoup(response.text, "html.parser")
-            
+
             # Remove script and style elements
             for script in soup(["script", "style", "nav", "footer", "header", "aside"]):
                 script.decompose()
 
             # Get text
             text = soup.get_text(separator="\n")
-            
+
             # Break into lines and remove leading and trailing space on each
             lines = (line.strip() for line in text.splitlines())
             # Break multi-headlines into a line each
             chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
             # Drop blank lines
-            text = '\n'.join(chunk for chunk in chunks if chunk)
-            
+            text = "\n".join(chunk for chunk in chunks if chunk)
+
             return text[:max_chars]
 
     except Exception as e:
@@ -3265,7 +3306,7 @@ async def streaming_community_search(
             "github": search_github,
             "reddit": search_reddit,
             "hackernews": search_hackernews,
-            "duckduckgo": search_duckduckgo, # Added duckduckgo
+            "duckduckgo": search_duckduckgo,  # Added duckduckgo
         }
 
         # Stream results and synthesis
@@ -3337,48 +3378,54 @@ async def deep_community_search(
         initial_query = f"{language} {topic}"
         if goal:
             initial_query += f" {goal}"
-            
+
         initial_results = await aggregate_search_results(initial_query, language)
-        
+
         # Step 2: Analyze for Gaps
         print("🤔 [Deep Search] Analyzing findings for gaps...")
-        provider, api_key = model_orchestrator.select_model_for_task("planning", "medium")
-        
+        provider, api_key = model_orchestrator.select_model_for_task(
+            "planning", "medium"
+        )
+
         gap_analysis_prompt = f"""
         Analyze these initial search results for "{topic}" in {language}.
         Goal: {goal or "Comprehensive understanding"}
-        
+
         Results Summary:
         {json.dumps(initial_results, indent=2)[:5000]}...
-        
+
         Identify 3 specific missing pieces of information or technical details that are needed to provide a TRULY comprehensive answer.
         Generate 3 targeted search queries to find this missing info.
-        
+
         Return JSON:
         {{
             "missing_info": ["gap 1", "gap 2", "gap 3"],
             "follow_up_queries": ["query 1", "query 2", "query 3"]
         }}
         """
-        
+
         # Call model for gap analysis (simulated call for now, replacing with direct logic if needed)
-        # For robust implementation, we'd use the orchestrator. 
+        # For robust implementation, we'd use the orchestrator.
         # To save complexity in this single file, we'll assume a simple heuristic or direct call if possible.
         # But since we don't have a generic 'call_model' exposed easily, we'll generate queries deterministically for now
         # to ensure it works without breaking.
-        
+
         # deterministic follow-up for robustness in this iteration:
         follow_up_queries = [
             f"{language} {topic} advanced usage",
             f"{language} {topic} best practices",
-            f"{language} {topic} common pitfalls"
+            f"{language} {topic} common pitfalls",
         ]
-        
+
         # Step 3: Follow-up Searches
         print(f"🕵️ [Deep Search] Running {len(follow_up_queries)} follow-up searches...")
-        follow_up_tasks = [aggregate_search_results(q, language) for q in follow_up_queries]
-        follow_up_results_list = await asyncio.gather(*follow_up_tasks, return_exceptions=True)
-        
+        follow_up_tasks = [
+            aggregate_search_results(q, language) for q in follow_up_queries
+        ]
+        follow_up_results_list = await asyncio.gather(
+            *follow_up_tasks, return_exceptions=True
+        )
+
         # Merge results
         combined_results = initial_results.copy()
         for res in follow_up_results_list:
@@ -3394,9 +3441,11 @@ async def deep_community_search(
         # Extract top URLs from DuckDuckGo results
         ddg_results = combined_results.get("duckduckgo", [])
         top_urls = [item["url"] for item in ddg_results[:3] if item.get("url")]
-        
+
         if top_urls:
-            contents = await asyncio.gather(*[fetch_page_content(url) for url in top_urls], return_exceptions=True)
+            contents = await asyncio.gather(
+                *[fetch_page_content(url) for url in top_urls], return_exceptions=True
+            )
             # Enrich results with content
             for i, content in enumerate(contents):
                 if isinstance(content, str) and i < len(ddg_results):
@@ -3405,14 +3454,14 @@ async def deep_community_search(
         # Step 5: Final Synthesis
         print("🤖 [Deep Search] Synthesizing final comprehensive answer...")
         final_response = await synthesize_with_multi_model(
-            combined_results, 
-            topic, 
-            language, 
-            goal, 
-            current_setup, 
-            thinking_mode=ThinkingMode.DEEP
+            combined_results,
+            topic,
+            language,
+            goal,
+            current_setup,
+            thinking_mode=ThinkingMode.DEEP,
         )
-        
+
         return json.dumps(final_response, indent=2)
 
     except Exception as e:
@@ -3431,7 +3480,10 @@ async def deep_community_search(
     },
 )
 async def parallel_multi_source_search(
-    query: str, language: str, sources: Optional[str] = "all", context: Optional[Any] = None
+    query: str,
+    language: str,
+    sources: Optional[str] = "all",
+    context: Optional[Any] = None,
 ) -> str:
     """
     Execute searches across multiple sources in PARALLEL with real-time updates.
@@ -3548,26 +3600,26 @@ async def parallel_multi_source_search(
 async def get_performance_metrics() -> str:
     """
     Get comprehensive performance metrics for the MCP server.
-    
+
     This tool provides real-time insights into:
     - Search performance and latency
     - API reliability and success rates
     - Cache effectiveness
     - Error distribution
     - System uptime
-    
+
     Returns:
         str: Formatted performance report with all metrics
-    
+
     Example Output:
         # 📊 Performance Metrics Report
-        
+
         ## System Performance
         - **Uptime**: 3600.0s
         - **Total Searches**: 45
         - **Average Search Time**: 1200ms
         - **Cache Hit Rate**: 35.5%
-        
+
         ## API Reliability
         - **Success Rate**: 99.2%
         - **Total Calls**: 250
@@ -3575,7 +3627,7 @@ async def get_performance_metrics() -> str:
     """
     if not ENHANCED_UTILITIES_AVAILABLE:
         return "⚠️ Performance monitoring not available. Please ensure enhanced_mcp_utilities.py is installed."
-    
+
     try:
         report = format_metrics_report()
         return report
@@ -3586,7 +3638,7 @@ async def get_performance_metrics() -> str:
 def validate_environment():
     """Validate environment configuration on startup."""
     print("\n[INFO] Validating Community Research MCP Environment...")
-    
+
     # Check API keys
     keys = {
         "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY"),
@@ -3594,28 +3646,35 @@ def validate_environment():
         "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
         "REDDIT_CLIENT_ID": os.getenv("REDDIT_CLIENT_ID"),
     }
-    
+
     active_keys = [k for k, v in keys.items() if v]
     if not active_keys:
         print("[WARN] No API keys found in environment!")
         print("   Please set at least one LLM provider key (GEMINI_API_KEY, etc.)")
         print("   in your .env file or environment variables.")
     else:
-        print(f"[OK] Found {len(active_keys)} active API keys: {', '.join(active_keys)}")
+        print(
+            f"[OK] Found {len(active_keys)} active API keys: {', '.join(active_keys)}"
+        )
 
     # Check streaming availability
     if STREAMING_AVAILABLE:
         print("[OK] Streaming capabilities: Active")
     else:
         print("[WARN] Streaming capabilities: Inactive (missing dependencies)")
-    
+
     # Check enhanced utilities
     if ENHANCED_UTILITIES_AVAILABLE:
-        print("[OK] Enhanced utilities: Active (5x reliability, quality scoring, deduplication)")
+        print(
+            "[OK] Enhanced utilities: Active (5x reliability, quality scoring, deduplication)"
+        )
     else:
-        print("[WARN] Enhanced utilities: Inactive (install enhanced_mcp_utilities.py for improvements)")
+        print(
+            "[WARN] Enhanced utilities: Inactive (install enhanced_mcp_utilities.py for improvements)"
+        )
 
     print("[READY] System ready!\n")
+
 
 # ============================================================================
 # Main Entry Point
@@ -3624,6 +3683,6 @@ def validate_environment():
 if __name__ == "__main__":
     # Validate environment
     validate_environment()
-    
+
     # Run the MCP server
     mcp.run()
