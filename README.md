@@ -1,4 +1,5 @@
 # Community Research MCP
+![download](https://github.com/user-attachments/assets/cde51164-2f14-43d2-86be-b7e0d483d1c7)
 
 **Stop hallucinating. Start validating.**
 
