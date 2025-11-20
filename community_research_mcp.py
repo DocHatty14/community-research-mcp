@@ -65,9 +65,7 @@ try:
     STREAMING_AVAILABLE = True
 except ImportError:
     STREAMING_AVAILABLE = False
-    print(
-        "Warning: Streaming modules not available. Install streaming_capabilities.py and streaming_search.py for enhanced features."
-    )
+    print("Note: Streaming capabilities unavailable")
 
 # Import enhanced MCP utilities for production-grade reliability
 try:
@@ -84,19 +82,11 @@ try:
     ENHANCED_UTILITIES_AVAILABLE = True
     # Initialize quality scorer
     _quality_scorer = QualityScorer()
-    print(
-        "✅ Enhanced MCP utilities loaded: 5x reliability, quality scoring, deduplication enabled"
-    )
+    print("Enhanced utilities active")
 except ImportError:
     ENHANCED_UTILITIES_AVAILABLE = False
     _quality_scorer = None
-    print(
-        "⚠️  Enhanced MCP utilities not available. Install enhanced_mcp_utilities.py for:\n"
-        "   - 5x more reliable API calls\n"
-        "   - Quality scoring with 40% confidence boost\n"
-        "   - 20% fewer duplicate results\n"
-        "   - Performance monitoring"
-    )
+    print("Note: Enhanced utilities unavailable")
 
 # Set up logging
 logging.getLogger().setLevel(logging.WARNING)
@@ -3637,43 +3627,33 @@ async def get_performance_metrics() -> str:
 
 def validate_environment():
     """Validate environment configuration on startup."""
-    print("\n[INFO] Validating Community Research MCP Environment...")
+    print("\nValidating environment...")
 
     # Check API keys
     keys = {
-        "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY"),
-        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
-        "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
-        "REDDIT_CLIENT_ID": os.getenv("REDDIT_CLIENT_ID"),
+        "GEMINI": os.getenv("GEMINI_API_KEY"),
+        "OPENAI": os.getenv("OPENAI_API_KEY"),
+        "ANTHROPIC": os.getenv("ANTHROPIC_API_KEY"),
+        "REDDIT": os.getenv("REDDIT_CLIENT_ID"),
     }
 
     active_keys = [k for k, v in keys.items() if v]
     if not active_keys:
-        print("[WARN] No API keys found in environment!")
-        print("   Please set at least one LLM provider key (GEMINI_API_KEY, etc.)")
-        print("   in your .env file or environment variables.")
+        print("Warning: No API keys configured")
     else:
-        print(
-            f"[OK] Found {len(active_keys)} active API keys: {', '.join(active_keys)}"
-        )
+        print(f"Active providers: {', '.join(active_keys)}")
 
-    # Check streaming availability
+    # Check capabilities
+    capabilities = []
     if STREAMING_AVAILABLE:
-        print("[OK] Streaming capabilities: Active")
-    else:
-        print("[WARN] Streaming capabilities: Inactive (missing dependencies)")
-
-    # Check enhanced utilities
+        capabilities.append("streaming")
     if ENHANCED_UTILITIES_AVAILABLE:
-        print(
-            "[OK] Enhanced utilities: Active (5x reliability, quality scoring, deduplication)"
-        )
-    else:
-        print(
-            "[WARN] Enhanced utilities: Inactive (install enhanced_mcp_utilities.py for improvements)"
-        )
+        capabilities.append("enhanced utilities")
 
-    print("[READY] System ready!\n")
+    if capabilities:
+        print(f"Capabilities: {', '.join(capabilities)}")
+
+    print("Ready\n")
 
 
 # ============================================================================
