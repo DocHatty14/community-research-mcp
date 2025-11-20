@@ -100,7 +100,7 @@ def detect_all_capabilities() -> SystemCapabilities:
 
 def format_capabilities_report(capabilities: SystemCapabilities) -> str:
     """Format capabilities as a user-friendly report."""
-    report = ["# 🔍 System Capabilities\n"]
+    report = ["# System Capabilities\n"]
 
     # Search APIs
     report.append("## Search APIs")
@@ -337,23 +337,23 @@ def format_streaming_update(
     output = []
 
     # Header with progress
-    output.append(f"# 🔍 Search Progress: {summary['sources_completed']}/4 sources")
+    output.append(f"# Search Progress: {summary['sources_completed']}/4 Sources")
     output.append(
         f"**Results:** {summary['total_results']} | **Elapsed:** {summary['elapsed_seconds']}s\n"
     )
 
     # Show pending sources
     if summary["sources_pending"]:
-        output.append(f"⏳ *Waiting for: {', '.join(summary['sources_pending'])}*\n")
+        output.append(f"*Waiting for: {', '.join(summary['sources_pending'])}*\n")
 
     # Organize by type (adaptive formatting)
     if state.results_by_type:
-        output.append("## 📊 Results by Type\n")
+        output.append("## Results by Type\n")
 
         # Quick fixes first (most valuable)
         if ResultType.QUICK_FIX.value in state.results_by_type:
             fixes = state.results_by_type[ResultType.QUICK_FIX.value]
-            output.append(f"### ✅ Quick Fixes ({len(fixes)})")
+            output.append(f"### Quick Fixes ({len(fixes)})")
             for fix in fixes[:3]:  # Show top 3
                 output.append(f"- **{fix.get('title', 'Untitled')}**")
                 output.append(
@@ -364,7 +364,7 @@ def format_streaming_update(
         # Code examples
         if ResultType.CODE_EXAMPLE.value in state.results_by_type:
             examples = state.results_by_type[ResultType.CODE_EXAMPLE.value]
-            output.append(f"### 💻 Code Examples ({len(examples)})")
+            output.append(f"### Code Examples ({len(examples)})")
             for ex in examples[:3]:
                 output.append(f"- **{ex.get('title', 'Untitled')}**")
                 output.append(f"  {ex.get('url', '')}")
@@ -373,7 +373,7 @@ def format_streaming_update(
         # Warnings (important!)
         if ResultType.WARNING.value in state.results_by_type:
             warnings = state.results_by_type[ResultType.WARNING.value]
-            output.append(f"### ⚠️ Warnings & Issues ({len(warnings)})")
+            output.append(f"### Warnings & Issues ({len(warnings)})")
             for warn in warnings[:2]:
                 output.append(f"- **{warn.get('title', 'Untitled')}**")
             output.append("")
@@ -381,13 +381,13 @@ def format_streaming_update(
         # Discussions
         if ResultType.DISCUSSION.value in state.results_by_type:
             discussions = state.results_by_type[ResultType.DISCUSSION.value]
-            output.append(f"### 💬 Discussions ({len(discussions)})")
+            output.append(f"### Community Discussions ({len(discussions)})")
             output.append(f"  {len(discussions)} community discussions available")
             output.append("")
 
     # Completion message
     if summary["is_complete"]:
-        output.append("\n✨ **All sources completed!** Ready for synthesis.\n")
+        output.append("\n**All sources completed!** Ready for synthesis.\n")
 
     return "\n".join(output)
 
@@ -398,7 +398,7 @@ def format_final_results(
     """Format final complete results with synthesis."""
     output = []
 
-    output.append("# 🎯 Community Research Results\n")
+    output.append("# Community Research Results\n")
     output.append(f"**Total Results:** {state.total_results}")
     output.append(f"**Sources:** {', '.join(state.sources_completed)}")
     output.append(
@@ -407,7 +407,7 @@ def format_final_results(
 
     # Show synthesis if available
     if synthesis and synthesis.get("findings"):
-        output.append("## 📋 Key Findings\n")
+        output.append("## Key Findings\n")
         for i, finding in enumerate(synthesis["findings"], 1):
             output.append(f"### {i}. {finding.get('title', 'Finding')}")
             output.append(f"**Difficulty:** {finding.get('difficulty', 'Unknown')}")
@@ -419,12 +419,14 @@ def format_final_results(
             output.append(f"**Solution:** {finding.get('solution', '')}\n")
 
             if finding.get("gotchas"):
-                output.append(f"⚠️ **Gotchas:** {finding.get('gotchas')}\n")
+                output.append(
+                    f"**Important Considerations:** {finding.get('gotchas')}\n"
+                )
 
             output.append("---\n")
 
     # Show categorized results
-    output.append("## 📊 All Results by Category\n")
+    output.append("## All Results by Category\n")
     for category, items in state.results_by_type.items():
         output.append(f"### {category.replace('_', ' ').title()} ({len(items)})")
         for item in items[:5]:  # Top 5 per category

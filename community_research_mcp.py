@@ -835,14 +835,14 @@ Search Results:
 
 Analyze these search results and provide a ROBUST, VERBOSE, and COMPREHENSIVE set of recommendations.
 
-STEP 1: CLUSTERING & ANALYSIS
+**STEP 1: Clustering & Analysis**
 Group the search results into distinct approaches or themes. Discard irrelevant results.
 Focus on the most promising clusters.
 
-STEP 2: DETAILED RECOMMENDATIONS
+**STEP 2: Detailed Recommendations**
 For each major cluster/approach, provide a detailed recommendation.
 
-Do not be brief. Be thorough. The user wants deep technical insight.
+Provide thorough, comprehensive recommendations with deep technical insight.
 
 For each recommendation:
 
@@ -853,7 +853,7 @@ For each recommendation:
 5. **Difficulty**: Easy/Medium/Hard.
 6. **Gotchas**: Edge cases, warnings, and potential pitfalls.
 
-Return ONLY valid JSON with this structure (no markdown, no backticks):
+Return only valid JSON with this exact structure (no markdown formatting, no backticks):
 {{
   "clusters": [
     {{
@@ -2257,42 +2257,55 @@ async def community_search(params: CommunitySearchInput) -> str:
             # Format response
             if params.response_format == ResponseFormat.MARKDOWN:
                 lines = [
-                    f"# Community Research: {params.topic}",
-                    f"**Language**: {params.language}",
+                    f"# Community Research Results",
+                    f"## {params.topic}",
+                    "",
+                    f"**Language:** {params.language}",
                     "",
                 ]
 
                 if "error" in synthesis:
-                    lines.append(f"**Error**: {synthesis['error']}")
+                    lines.append(f"**Error:** {synthesis['error']}")
                     lines.append("")
 
                 findings = synthesis.get("findings", [])
                 if findings:
-                    lines.append(f"## Found {len(findings)} Recommendations")
+                    lines.append(
+                        f"## Research Findings: {len(findings)} Recommendations"
+                    )
                     if ENHANCED_UTILITIES_AVAILABLE:
-                        lines.append("*Quality scores and deduplication enabled*")
+                        lines.append(
+                            "*Enhanced with quality scoring and intelligent deduplication*"
+                        )
                     lines.append("")
 
                     for i, finding in enumerate(findings, 1):
                         lines.extend(
                             [
                                 f"### {i}. {finding.get('title', 'Recommendation')}",
-                                f"**Difficulty**: {finding.get('difficulty', 'Unknown')} | **Community Score**: {finding.get('community_score', 'N/A')}/100",
                                 "",
-                                "**Problem**:",
-                                finding.get("problem", "No problem description"),
+                                f"**Difficulty:** {finding.get('difficulty', 'Unknown')} | **Community Score:** {finding.get('community_score', 'N/A')}/100",
                                 "",
-                                "**Solution**:",
-                                finding.get("solution", "No solution provided"),
+                                "#### Problem",
+                                finding.get(
+                                    "problem", "No problem description available."
+                                ),
                                 "",
-                                "**Benefits**:",
-                                finding.get("benefit", "No benefits listed"),
+                                "#### Solution",
+                                finding.get("solution", "No solution provided."),
                                 "",
-                                "**Evidence**:",
-                                finding.get("evidence", "No evidence provided"),
+                                "#### Benefits",
+                                finding.get("benefit", "No benefits listed."),
                                 "",
-                                "**Gotchas**:",
-                                finding.get("gotchas", "None noted"),
+                                "#### Evidence",
+                                finding.get(
+                                    "evidence", "No community evidence available."
+                                ),
+                                "",
+                                "#### Important Considerations",
+                                finding.get(
+                                    "gotchas", "No special considerations noted."
+                                ),
                                 "",
                                 "---",
                                 "",
@@ -2300,15 +2313,24 @@ async def community_search(params: CommunitySearchInput) -> str:
                         )
 
                     # Add source summary
+                    lines.append("---")
+                    lines.append("")
                     lines.append("## Sources Searched")
+                    lines.append("")
                     lines.append(
-                        f"- Stack Overflow: {len(search_results['stackoverflow'])} results"
+                        f"- **Stack Overflow:** {len(search_results['stackoverflow'])} results"
                     )
-                    lines.append(f"- GitHub: {len(search_results['github'])} results")
-                    lines.append(f"- Reddit: {len(search_results['reddit'])} results")
                     lines.append(
-                        f"- Hacker News: {len(search_results['hackernews'])} results"
+                        f"- **GitHub:** {len(search_results['github'])} results"
                     )
+                    lines.append(
+                        f"- **Reddit:** {len(search_results['reddit'])} results"
+                    )
+                    lines.append(
+                        f"- **Hacker News:** {len(search_results['hackernews'])} results"
+                    )
+                    lines.append("")
+                    lines.append(f"**Total Results Found:** {total_results}")
 
                 result = "\n".join(lines)
             else:

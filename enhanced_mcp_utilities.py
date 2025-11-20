@@ -38,6 +38,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 class RetryStrategy(Enum):
     """Configurable retry strategies"""
+
     EXPONENTIAL_BACKOFF = "exponential"  # 1s, 2s, 4s, 8s
     LINEAR = "linear"  # 1s, 2s, 3s, 4s
     CONSTANT = "constant"  # 2s, 2s, 2s, 2s
@@ -46,20 +47,21 @@ class RetryStrategy(Enum):
 @dataclass
 class APIMetrics:
     """Track API call performance metrics"""
+
     total_calls: int = 0
     successful_calls: int = 0
     failed_calls: int = 0
     retry_count: int = 0
     total_latency_ms: float = 0.0
     error_types: Dict[str, int] = field(default_factory=dict)
-    
+
     @property
     def success_rate(self) -> float:
         """Calculate success rate percentage"""
         if self.total_calls == 0:
             return 0.0
         return (self.successful_calls / self.total_calls) * 100
-    
+
     @property
     def average_latency_ms(self) -> float:
         """Calculate average latency"""
@@ -71,18 +73,18 @@ class APIMetrics:
 class ResilientAPIWrapper:
     """
     Automatic retry wrapper with exponential backoff for API calls.
-    
+
     Provides 5x reliability improvement through intelligent retry logic,
     error handling, and fallback strategies.
     """
-    
+
     def __init__(
         self,
         max_retries: int = 3,
         base_delay: float = 1.0,
         max_delay: float = 10.0,
         strategy: RetryStrategy = RetryStrategy.EXPONENTIAL_BACKOFF,
-        retry_on_exceptions: Optional[List[type]] = None
+        retry_on_exceptions: Optional[List[type]] = None,
     ):
         self.max_retries = max_retries
         self.base_delay = base_delay
@@ -92,67 +94,65 @@ class ResilientAPIWrapper:
             Exception,  # Catch all by default
         ]
         self.metrics = APIMetrics()
-    
+
     def _calculate_delay(self, attempt: int) -> float:
         """Calculate delay based on retry strategy"""
         if self.strategy == RetryStrategy.EXPONENTIAL_BACKOFF:
-            delay = min(self.base_delay * (2 ** attempt), self.max_delay)
+            delay = min(self.base_delay * (2**attempt), self.max_delay)
         elif self.strategy == RetryStrategy.LINEAR:
             delay = min(self.base_delay * (attempt + 1), self.max_delay)
         else:  # CONSTANT
             delay = self.base_delay
-        
+
         # Add jitter to prevent thundering herd
         import random
+
         jitter = random.uniform(0, 0.1 * delay)
         return delay + jitter
-    
-    async def call(
-        self,
-        func: Callable,
-        *args,
-        **kwargs
-    ) -> Any:
+
+    async def call(self, func: Callable, *args, **kwargs) -> Any:
         """
         Execute function with automatic retry logic.
-        
+
         Args:
             func: Async function to call
             *args: Positional arguments for func
             **kwargs: Keyword arguments for func
-            
+
         Returns:
             Result from func
-            
+
         Raises:
             Last exception if all retries fail
         """
         last_exception = None
         self.metrics.total_calls += 1
         start_time = time.time()
-        
+
         for attempt in range(self.max_retries + 1):
             try:
                 result = await func(*args, **kwargs)
-                
+
                 # Success - record metrics
                 elapsed_ms = (time.time() - start_time) * 1000
                 self.metrics.successful_calls += 1
                 self.metrics.total_latency_ms += elapsed_ms
-                
+
                 if attempt > 0:
                     self.metrics.retry_count += 1
                     logging.info(f"✓ API call succeeded after {attempt} retries")
-                
+
                 return result
-                
+
             except tuple(self.retry_on_exceptions) as e:
                 last_exception = e
-                
+
                 # Record error type
                 error_type = type(e).__name__
-                self.metrics.error_types[error_type] = self.metrics.error_types.get(error_type, 0) + 1
-                
+                self.metrics.error_types[error_type] = (
+                    self.metrics.error_types.get(error_type, 0) + 1
+                )
+
                 if attempt < self.max_retries:
                     delay = self._calculate_delay(attempt)
                     logging.warning(
@@ -164,7 +164,7 @@ class ResilientAPIWrapper:
                     logging.error(
                         f"✗ API call failed after {self.max_retries + 1} attempts: {error_type}"
                     )
-        
+
         # All retries exhausted
         self.metrics.failed_calls += 1
         raise last_exception
@@ -177,7 +177,7 @@ resilient_api = ResilientAPIWrapper(max_retries=3, base_delay=1.0)
 async def resilient_api_call(func: Callable, *args, **kwargs) -> Any:
     """
     Convenience function for making resilient API calls.
-    
+
     Usage:
         result = await resilient_api_call(search_stackoverflow, query, language)
     """
@@ -192,10 +192,10 @@ async def resilient_api_call(func: Callable, *args, **kwargs) -> Any:
 class QualityScorer:
     """
     Assign confidence scores (0-100) to search findings based on multiple signals.
-    
+
     Provides 40% boost in user confidence by making quality transparent.
     """
-    
+
     def __init__(self):
         self.scoring_weights = {
             "source_authority": 0.25,  # Stack Overflow > Reddit > Forums
@@ -204,19 +204,19 @@ class QualityScorer:
             "specificity": 0.20,  # Detailed solutions score higher
             "evidence_quality": 0.10,  # Code examples, benchmarks
         }
-    
+
     def score_finding(self, finding: Dict[str, Any]) -> int:
         """
         Calculate quality score for a finding.
-        
+
         Args:
             finding: Dict with keys like 'source', 'score', 'snippet', 'age', etc.
-            
+
         Returns:
             Quality score from 0-100
         """
         total_score = 0.0
-        
+
         # Source authority
         source = finding.get("source", "unknown").lower()
         source_scores = {
@@ -228,57 +228,71 @@ class QualityScorer:
             "unknown": 50,
         }
         source_score = source_scores.get(source, 50)
-        total_score += (source_score / 100) * self.scoring_weights["source_authority"] * 100
-        
+        total_score += (
+            (source_score / 100) * self.scoring_weights["source_authority"] * 100
+        )
+
         # Community validation (votes, stars, etc.)
         community_score = finding.get("score", 0)
         answer_count = finding.get("answer_count", 0)
         comments = finding.get("comments", 0)
-        
-        validation_score = min(100, (community_score * 10) + (answer_count * 5) + (comments * 2))
-        total_score += (validation_score / 100) * self.scoring_weights["community_validation"] * 100
-        
+
+        validation_score = min(
+            100, (community_score * 10) + (answer_count * 5) + (comments * 2)
+        )
+        total_score += (
+            (validation_score / 100)
+            * self.scoring_weights["community_validation"]
+            * 100
+        )
+
         # Recency (prefer recent content, but not too harshly penalize old)
         # Assume age in days if provided, otherwise neutral score
         age_days = finding.get("age_days", 180)  # Default to 6 months
         recency_score = max(0, 100 - (age_days / 10))  # Degrade 1 point per 10 days
         total_score += (recency_score / 100) * self.scoring_weights["recency"] * 100
-        
+
         # Specificity (based on snippet/solution length and detail)
         snippet = finding.get("snippet", "")
         solution = finding.get("solution", "")
         combined_text = snippet + solution
-        
+
         # Code blocks indicate detailed solutions
         code_blocks = len(re.findall(r"```|`[^`]+`", combined_text))
         text_length = len(combined_text)
-        
+
         specificity_score = min(100, (text_length / 10) + (code_blocks * 15))
-        total_score += (specificity_score / 100) * self.scoring_weights["specificity"] * 100
-        
+        total_score += (
+            (specificity_score / 100) * self.scoring_weights["specificity"] * 100
+        )
+
         # Evidence quality (presence of links, examples, benchmarks)
         has_link = bool(finding.get("url"))
         has_code = "```" in combined_text or "`" in combined_text
         has_numbers = bool(re.search(r"\d+%|\d+x faster|\d+ms", combined_text))
-        
+
         evidence_score = (has_link * 40) + (has_code * 40) + (has_numbers * 20)
-        total_score += (evidence_score / 100) * self.scoring_weights["evidence_quality"] * 100
-        
+        total_score += (
+            (evidence_score / 100) * self.scoring_weights["evidence_quality"] * 100
+        )
+
         return int(min(100, max(0, total_score)))
-    
-    def score_findings_batch(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def score_findings_batch(
+        self, findings: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """
         Score multiple findings and add quality_score field.
-        
+
         Args:
             findings: List of finding dicts
-            
+
         Returns:
             Same list with added 'quality_score' field
         """
         for finding in findings:
             finding["quality_score"] = self.score_finding(finding)
-        
+
         return findings
 
 
@@ -287,67 +301,69 @@ class QualityScorer:
 # ============================================================================
 
 
-def deduplicate_results(search_results: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
+def deduplicate_results(
+    search_results: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, List[Dict[str, Any]]]:
     """
     Remove duplicate content across sources (20% reduction typical).
-    
+
     Uses URL and title matching to identify duplicates. Keeps the highest-quality
     version of each unique result.
-    
+
     Args:
         search_results: Dict mapping source names to lists of results
-        
+
     Returns:
         Deduplicated search results
     """
     seen_urls: Set[str] = set()
     seen_titles: Set[str] = set()
     deduped_results = {}
-    
+
     # Track quality scores for duplicate resolution
     scorer = QualityScorer()
-    
+
     for source, results in search_results.items():
         unique_results = []
-        
+
         for result in results:
             url = result.get("url", "").strip()
             title = result.get("title", "").lower().strip()
-            
+
             # Normalize URL (remove trailing slashes, query params for comparison)
             normalized_url = url.rstrip("/").split("?")[0] if url else ""
-            
+
             # Check for duplicates
             is_duplicate = False
-            
+
             if normalized_url and normalized_url in seen_urls:
                 is_duplicate = True
             elif title and title in seen_titles:
                 # Allow some title variation
                 if len(title) > 20:  # Only dedupe longer titles
                     is_duplicate = True
-            
+
             if not is_duplicate:
                 unique_results.append(result)
-                
+
                 if normalized_url:
                     seen_urls.add(normalized_url)
                 if title:
                     seen_titles.add(title)
-        
+
         deduped_results[source] = unique_results
-    
+
     # Log deduplication stats
     original_count = sum(len(results) for results in search_results.values())
     deduped_count = sum(len(results) for results in deduped_results.values())
     removed_count = original_count - deduped_count
-    
+
     if removed_count > 0:
         logging.info(
             f"🔍 Deduplication: Removed {removed_count} duplicates "
-            f"({removed_count/original_count*100:.1f}% reduction)"
+            f"({removed_count / original_count * 100:.1f}% reduction)"
         )
-    
+
     return deduped_results
 
 
@@ -359,44 +375,44 @@ def deduplicate_results(search_results: Dict[str, List[Dict[str, Any]]]) -> Dict
 @dataclass
 class PerformanceMonitor:
     """Track overall system performance metrics"""
-    
+
     start_time: float = field(default_factory=time.time)
     search_times: List[float] = field(default_factory=list)
     synthesis_times: List[float] = field(default_factory=list)
     cache_hits: int = 0
     cache_misses: int = 0
     total_results_found: int = 0
-    
+
     def record_search_time(self, duration_seconds: float):
         """Record a search operation duration"""
         self.search_times.append(duration_seconds)
-    
+
     def record_synthesis_time(self, duration_seconds: float):
         """Record a synthesis operation duration"""
         self.synthesis_times.append(duration_seconds)
-    
+
     def record_cache_hit(self):
         """Increment cache hit counter"""
         self.cache_hits += 1
-    
+
     def record_cache_miss(self):
         """Increment cache miss counter"""
         self.cache_misses += 1
-    
+
     @property
     def average_search_time(self) -> float:
         """Calculate average search time in seconds"""
         if not self.search_times:
             return 0.0
         return sum(self.search_times) / len(self.search_times)
-    
+
     @property
     def average_synthesis_time(self) -> float:
         """Calculate average synthesis time in seconds"""
         if not self.synthesis_times:
             return 0.0
         return sum(self.synthesis_times) / len(self.synthesis_times)
-    
+
     @property
     def cache_hit_rate(self) -> float:
         """Calculate cache hit rate percentage"""
@@ -404,12 +420,12 @@ class PerformanceMonitor:
         if total == 0:
             return 0.0
         return (self.cache_hits / total) * 100
-    
+
     @property
     def uptime_seconds(self) -> float:
         """Calculate uptime in seconds"""
         return time.time() - self.start_time
-    
+
     def get_summary(self) -> Dict[str, Any]:
         """Get comprehensive performance summary"""
         return {
@@ -442,38 +458,40 @@ def get_api_metrics() -> APIMetrics:
 def format_metrics_report() -> str:
     """
     Generate human-readable metrics report.
-    
+
     Returns:
         Formatted metrics string
     """
     perf = get_performance_monitor()
     api_metrics = get_api_metrics()
-    
+
     report_lines = [
-        "# 📊 Performance Metrics Report",
+        "# Performance Metrics Report",
         "",
         "## System Performance",
-        f"- **Uptime**: {perf.uptime_seconds:.1f}s",
-        f"- **Total Searches**: {len(perf.search_times)}",
-        f"- **Average Search Time**: {perf.average_search_time * 1000:.0f}ms",
-        f"- **Average Synthesis Time**: {perf.average_synthesis_time * 1000:.0f}ms",
-        f"- **Cache Hit Rate**: {perf.cache_hit_rate:.1f}% ({perf.cache_hits}/{perf.cache_hits + perf.cache_misses})",
+        f"- **Uptime:** {perf.uptime_seconds:.1f}s",
+        f"- **Total Searches:** {len(perf.search_times)}",
+        f"- **Average Search Time:** {perf.average_search_time * 1000:.0f}ms",
+        f"- **Average Synthesis Time:** {perf.average_synthesis_time * 1000:.0f}ms",
+        f"- **Cache Hit Rate:** {perf.cache_hit_rate:.1f}% ({perf.cache_hits}/{perf.cache_hits + perf.cache_misses})",
         "",
         "## API Reliability",
-        f"- **Success Rate**: {api_metrics.success_rate:.1f}%",
-        f"- **Total Calls**: {api_metrics.total_calls}",
-        f"- **Successful**: {api_metrics.successful_calls}",
-        f"- **Failed**: {api_metrics.failed_calls}",
-        f"- **Retry Count**: {api_metrics.retry_count}",
-        f"- **Average Latency**: {api_metrics.average_latency_ms:.0f}ms",
+        f"- **Success Rate:** {api_metrics.success_rate:.1f}%",
+        f"- **Total Calls:** {api_metrics.total_calls}",
+        f"- **Successful:** {api_metrics.successful_calls}",
+        f"- **Failed:** {api_metrics.failed_calls}",
+        f"- **Retry Count:** {api_metrics.retry_count}",
+        f"- **Average Latency:** {api_metrics.average_latency_ms:.0f}ms",
         "",
     ]
-    
+
     if api_metrics.error_types:
         report_lines.append("## Error Distribution")
-        for error_type, count in sorted(api_metrics.error_types.items(), key=lambda x: x[1], reverse=True):
-            report_lines.append(f"- **{error_type}**: {count}")
-    
+        for error_type, count in sorted(
+            api_metrics.error_types.items(), key=lambda x: x[1], reverse=True
+        ):
+            report_lines.append(f"- **{error_type}:** {count}")
+
     return "\n".join(report_lines)
 
 
@@ -485,21 +503,21 @@ def format_metrics_report() -> str:
 def parse_llm_json_response(text: str, max_attempts: int = 5) -> Dict[str, Any]:
     """
     Robustly extract and parse JSON from LLM responses.
-    
+
     Handles common issues:
     - Markdown code blocks (```json ... ```)
     - Extra whitespace
     - Trailing commas
     - Embedded JSON within text
     - Partial JSON responses
-    
+
     Args:
         text: Raw text from LLM
         max_attempts: Number of parsing strategies to try
-        
+
     Returns:
         Parsed JSON dict
-        
+
     Raises:
         json.JSONDecodeError: If all parsing attempts fail
     """
@@ -508,7 +526,7 @@ def parse_llm_json_response(text: str, max_attempts: int = 5) -> Dict[str, Any]:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    
+
     # Strategy 2: Strip markdown code blocks
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -517,35 +535,37 @@ def parse_llm_json_response(text: str, max_attempts: int = 5) -> Dict[str, Any]:
         # Remove closing code fence
         cleaned = re.sub(r"\n?```\s*$", "", cleaned)
         cleaned = cleaned.strip()
-        
+
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
             pass
-    
+
     # Strategy 3: Find JSON within text using regex
-    json_pattern = r'\{.*\}'
+    json_pattern = r"\{.*\}"
     matches = re.findall(json_pattern, text, re.DOTALL)
-    
+
     for match in matches:
         try:
             return json.loads(match)
         except json.JSONDecodeError:
             continue
-    
+
     # Strategy 4: Try to fix common JSON issues
     try:
         # Remove trailing commas
-        fixed = re.sub(r',\s*}', '}', text)
-        fixed = re.sub(r',\s*]', ']', fixed)
+        fixed = re.sub(r",\s*}", "}", text)
+        fixed = re.sub(r",\s*]", "]", fixed)
         return json.loads(fixed)
     except json.JSONDecodeError:
         pass
-    
+
     # Strategy 5: Last resort - return empty structure with error
-    logging.error(f"Failed to parse JSON from LLM response after {max_attempts} attempts")
+    logging.error(
+        f"Failed to parse JSON from LLM response after {max_attempts} attempts"
+    )
     logging.debug(f"Raw response: {text[:500]}...")
-    
+
     return {
         "error": "Failed to parse LLM response as JSON",
         "findings": [],
@@ -559,60 +579,60 @@ def parse_llm_json_response(text: str, max_attempts: int = 5) -> Dict[str, Any]:
 
 
 async def enhanced_synthesize_with_llm(
-    original_synthesis_func: Callable,
-    search_results: Dict[str, Any],
-    *args,
-    **kwargs
+    original_synthesis_func: Callable, search_results: Dict[str, Any], *args, **kwargs
 ) -> Dict[str, Any]:
     """
     Enhanced wrapper around synthesis function with all improvements.
-    
+
     Adds:
     - Deduplication
-    - Quality scoring  
+    - Quality scoring
     - Performance tracking
     - Robust JSON parsing
-    
+
     Args:
         original_synthesis_func: The synthesize_with_llm function to wrap
         search_results: Search results dict
         *args, **kwargs: Additional arguments for synthesis
-        
+
     Returns:
         Enhanced synthesis result with quality scores
     """
     perf_monitor = get_performance_monitor()
-    
+
     # Step 1: Deduplicate results
     deduped_results = deduplicate_results(search_results)
-    
+
     # Step 2: Perform synthesis with performance tracking
     start_time = time.time()
-    
+
     try:
-        synthesis_result = await original_synthesis_func(deduped_results, *args, **kwargs)
+        synthesis_result = await original_synthesis_func(
+            deduped_results, *args, **kwargs
+        )
     except Exception as e:
         logging.error(f"Synthesis failed: {e}")
-        synthesis_result = {
-            "error": f"Synthesis failed: {str(e)}",
-            "findings": []
-        }
-    
+        synthesis_result = {"error": f"Synthesis failed: {str(e)}", "findings": []}
+
     synthesis_duration = time.time() - start_time
     perf_monitor.record_synthesis_time(synthesis_duration)
-    
+
     # Step 3: Add quality scores to findings
-    if "findings" in synthesis_result and isinstance(synthesis_result["findings"], list):
+    if "findings" in synthesis_result and isinstance(
+        synthesis_result["findings"], list
+    ):
         scorer = QualityScorer()
-        synthesis_result["findings"] = scorer.score_findings_batch(synthesis_result["findings"])
-    
+        synthesis_result["findings"] = scorer.score_findings_batch(
+            synthesis_result["findings"]
+        )
+
     # Step 4: Add performance metadata
     synthesis_result["_performance"] = {
         "synthesis_time_ms": synthesis_duration * 1000,
         "deduplication_applied": True,
         "quality_scoring_applied": True,
     }
-    
+
     return synthesis_result
 
 
@@ -647,7 +667,7 @@ results = await resilient_api_call(search_stackoverflow, query, language)
 
 # NEW:
 synthesis = await enhanced_synthesize_with_llm(
-    synthesize_with_llm, 
+    synthesize_with_llm,
     search_results,
     query, language, goal, current_setup
 )
