@@ -1,7 +1,7 @@
 # Community Research MCP
 ![download](https://github.com/user-attachments/assets/cde51164-2f14-43d2-86be-b7e0d483d1c7)
 
-**Stop hallucinating. Start validating.**
+**Real fixes from real people, not manuals.**
 
 A Model Context Protocol server that bypasses generic AI training data to tap directly into the living wisdom of the developer community.
 
