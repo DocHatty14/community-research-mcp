@@ -12,6 +12,7 @@ from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from streaming_capabilities import (
     ProgressiveAggregator,
     StreamingResult,
+    summarize_content_shapes,
     format_final_results,
     format_streaming_update,
 )
@@ -85,7 +86,7 @@ async def parallel_streaming_search(
     result_queue = asyncio.Queue()
 
     # Create aggregator
-    aggregator = ProgressiveAggregator()
+    aggregator = ProgressiveAggregator(expected_sources=list(search_functions.keys()))
 
     # Report initial progress
     if context:
@@ -137,11 +138,19 @@ async def parallel_streaming_search(
         # Report progress
         if context:
             summary = aggregator.get_smart_summary()
-            progress_msg = f"{result.source}: {len(result.data)} results"
             if result.error:
                 progress_msg = f"{result.source}: ❌ {result.error}"
                 await context.info(f"⚠️ {progress_msg}")
             else:
+                shape_stats = summarize_content_shapes({result.source: result.data})
+                per = shape_stats.get("per_source", {}).get(result.source, {})
+                shapes = per.get("shapes", {})
+                shape_parts = [
+                    f"{name}:{count}" for name, count in shapes.items() if count > 0
+                ]
+                shape_text = ", ".join(shape_parts) if shape_parts else "no text captured"
+                label = per.get("label", result.source)
+                progress_msg = f"{label}: {len(result.data)} items ({shape_text})"
                 await context.info(f"✓ {progress_msg}")
 
             await context.report_progress(

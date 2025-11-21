@@ -141,6 +141,73 @@ def format_capabilities_report(capabilities: SystemCapabilities) -> str:
 
 
 # ============================================================================
+# Source labels and content shape classification
+# ============================================================================
+
+# Human-friendly source labels for progress/output
+SOURCE_LABELS = {
+    "stackoverflow": "Stack Overflow Q&A",
+    "github": "GitHub code/issue",
+    "reddit": "Reddit thread",
+    "hackernews": "Hacker News discussion",
+    "duckduckgo": "Web page (DuckDuckGo)",
+}
+
+
+def _content_shape(length: int) -> str:
+    """Classify content length into sentence/paragraph/page buckets."""
+    if length <= 200:
+        return "sentence"
+    if length <= 800:
+        return "paragraph"
+    return "page"
+
+
+def summarize_content_shapes(results_by_source: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """
+    Summarize content lengths by source (sentence/paragraph/page).
+
+    Returns:
+        {
+            "per_source": {
+                "reddit": {"label": "Reddit thread", "total": 3, "shapes": {"sentence":1,"paragraph":1,"page":1}},
+                ...
+            },
+            "totals": {"sentence": x, "paragraph": y, "page": z}
+        }
+    """
+    totals = {"sentence": 0, "paragraph": 0, "page": 0}
+    per_source: Dict[str, Any] = {}
+
+    for source, items in results_by_source.items():
+        if not isinstance(items, list):
+            continue
+        shapes = {"sentence": 0, "paragraph": 0, "page": 0}
+        for item in items:
+            text = (
+                item.get("content")
+                or item.get("snippet")
+                or item.get("text")
+                or item.get("body")
+                or ""
+            )
+            length = len(str(text))
+            shapes[_content_shape(length)] += 1
+
+        totals["sentence"] += shapes["sentence"]
+        totals["paragraph"] += shapes["paragraph"]
+        totals["page"] += shapes["page"]
+
+        per_source[source] = {
+            "label": SOURCE_LABELS.get(source, source),
+            "total": len(items),
+            "shapes": shapes,
+        }
+
+    return {"per_source": per_source, "totals": totals}
+
+
+# ============================================================================
 # Result Content Type Classification
 # ============================================================================
 
@@ -252,7 +319,14 @@ class ProgressiveAggregator:
     Provides smart reorganization with each new result batch.
     """
 
-    def __init__(self):
+    def __init__(self, expected_sources: Optional[List[str]] = None):
+        self.expected_sources = expected_sources or [
+            "stackoverflow",
+            "github",
+            "reddit",
+            "hackernews",
+            "duckduckgo",
+        ]
         self.state = AggregatedState(
             results_by_source={},
             results_by_type={},
@@ -304,18 +378,21 @@ class ProgressiveAggregator:
             "results_by_type": {
                 k: len(v) for k, v in self.state.results_by_type.items()
             },
+            "shape_stats": summarize_content_shapes(self.state.results_by_source),
+            "expected_sources": self.expected_sources,
             "is_complete": len(self.state.sources_completed)
             >= self._get_expected_source_count(),
         }
 
     def _get_pending_sources(self) -> List[str]:
         """Get list of sources still pending."""
-        all_sources = ["stackoverflow", "github", "reddit", "hackernews"]
-        return [s for s in all_sources if s not in self.state.sources_completed]
+        return [
+            s for s in self.expected_sources if s not in self.state.sources_completed
+        ]
 
     def _get_expected_source_count(self) -> int:
         """Get expected number of sources."""
-        return 4  # stackoverflow, github, reddit, hackernews
+        return len(self.expected_sources)
 
 
 # ============================================================================
@@ -336,8 +413,11 @@ def format_streaming_update(
     """
     output = []
 
+    expected_total = len(summary.get("expected_sources", [])) or 4
     # Header with progress
-    output.append(f"# Search Progress: {summary['sources_completed']}/4 Sources")
+    output.append(
+        f"# Search Progress: {summary['sources_completed']}/{expected_total} Sources"
+    )
     output.append(
         f"**Results:** {summary['total_results']} | **Elapsed:** {summary['elapsed_seconds']}s\n"
     )
@@ -345,6 +425,28 @@ def format_streaming_update(
     # Show pending sources
     if summary["sources_pending"]:
         output.append(f"*Waiting for: {', '.join(summary['sources_pending'])}*\n")
+
+    # Source intake snapshot with content shapes
+    shape_stats = summary.get("shape_stats", {})
+    per_source = shape_stats.get("per_source", {})
+    if per_source:
+        output.append("## Source Intake")
+        for source, stats in per_source.items():
+            shapes = stats.get("shapes", {})
+            shape_parts = [
+                f"{name}:{count}"
+                for name, count in shapes.items()
+                if isinstance(count, int) and count > 0
+            ]
+            shape_text = ", ".join(shape_parts) if shape_parts else "no text captured"
+            label = stats.get("label", source)
+            output.append(
+                f"- {label}: {stats.get('total', 0)} items ({shape_text})"
+            )
+        output.append("")
+        output.append(
+            "_Content sizes: sentence <=200 chars; paragraph <=800 chars; page >800 chars_\n"
+        )
 
     # Organize by type (adaptive formatting)
     if state.results_by_type:
@@ -392,6 +494,35 @@ def format_streaming_update(
     return "\n".join(output)
 
 
+def _source_label(source: Optional[str]) -> str:
+    """Human-friendly label for a source key."""
+    if not source:
+        return "Unknown source"
+    return SOURCE_LABELS.get(source, source)
+
+
+def _short_snippet(text: str, limit: int = 180) -> str:
+    """Collapse whitespace and trim to a short preview."""
+    if not text:
+        return ""
+    collapsed = " ".join(str(text).split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1].rstrip() + "..."
+
+
+def _extract_snippet(item: Dict[str, Any], limit: int = 180) -> str:
+    """Pull a snippet from common content fields."""
+    text = (
+        item.get("snippet")
+        or item.get("content")
+        or item.get("text")
+        or item.get("body")
+        or ""
+    )
+    return _short_snippet(text, limit)
+
+
 def format_final_results(
     state: AggregatedState, synthesis: Optional[Dict[str, Any]] = None
 ) -> str:
@@ -405,34 +536,79 @@ def format_final_results(
         f"**Search Time:** {(state.last_update - state.start_time).total_seconds():.2f}s\n"
     )
 
-    # Show synthesis if available
-    if synthesis and synthesis.get("findings"):
-        output.append("## Key Findings\n")
-        for i, finding in enumerate(synthesis["findings"], 1):
-            output.append(f"### {i}. {finding.get('title', 'Finding')}")
-            output.append(f"**Difficulty:** {finding.get('difficulty', 'Unknown')}")
-            output.append(
-                f"**Community Score:** {finding.get('community_score', 0)}/100\n"
-            )
+    # Show synthesis if available, with extra context and readability
+    if synthesis:
+        output.append("## Key Findings (LLM synthesis)\n")
 
-            output.append(f"**Problem:** {finding.get('problem', '')}\n")
-            output.append(f"**Solution:** {finding.get('solution', '')}\n")
+        summary = synthesis.get("synthesis_summary")
+        if summary:
+            output.append(_short_snippet(summary, 320) + "\n")
 
-            if finding.get("gotchas"):
+        clusters = synthesis.get("clusters") or []
+        for cluster in clusters:
+            output.append(f"### {cluster.get('name', 'Cluster')}")
+            desc = cluster.get("description")
+            if desc:
+                output.append(_short_snippet(desc, 280))
+
+            for finding in cluster.get("findings", [])[:3]:
+                title = finding.get("title", "Finding")
+                difficulty = finding.get("difficulty", "Unknown")
+                community = finding.get("community_score", "N/A")
                 output.append(
-                    f"**Important Considerations:** {finding.get('gotchas')}\n"
+                    f"- **{title}** - difficulty: {difficulty}, community score: {community}"
                 )
+                problem = _short_snippet(finding.get("problem", ""), 220)
+                solution = _short_snippet(finding.get("solution", ""), 240)
+                benefit = _short_snippet(finding.get("benefit", ""), 180)
+                evidence = _short_snippet(finding.get("evidence", ""), 140)
+                gotchas = _short_snippet(finding.get("gotchas", ""), 140)
 
-            output.append("---\n")
+                if problem:
+                    output.append(f"  Problem: {problem}")
+                if solution:
+                    output.append(f"  Solution: {solution}")
+                if benefit:
+                    output.append(f"  Benefit: {benefit}")
+                if evidence:
+                    output.append(f"  Evidence: {evidence}")
+                if gotchas:
+                    output.append(f"  Gotchas: {gotchas}")
+            output.append("")
+
+    # Source-first view so users can see exactly where items came from
+    if state.results_by_source:
+        output.append("## Source Breakdown\n")
+        for source, items in state.results_by_source.items():
+            label = _source_label(source)
+            output.append(f"### {label} ({len(items)})")
+            for item in items[:5]:
+                title = item.get("title", "Untitled")
+                url = item.get("url", "#")
+                score = item.get("score")
+                score_text = f" | Score: {score}" if score is not None else ""
+                snippet = _extract_snippet(item, 180)
+                output.append(f"- [{title}]({url}) | Source: {label}{score_text}")
+                if snippet:
+                    output.append(f"  Snippet: {snippet}")
+            if len(items) > 5:
+                output.append(f"  ...{len(items) - 5} more from {label}")
+            output.append("")
 
     # Show categorized results
     output.append("## All Results by Category\n")
     for category, items in state.results_by_type.items():
         output.append(f"### {category.replace('_', ' ').title()} ({len(items)})")
         for item in items[:5]:  # Top 5 per category
-            output.append(
-                f"- [{item.get('title', 'Untitled')}]({item.get('url', '#')})"
-            )
+            title = item.get("title", "Untitled")
+            url = item.get("url", "#")
+            src_label = _source_label(item.get("source"))
+            score = item.get("score")
+            score_text = f" | Score: {score}" if score is not None else ""
+            snippet = _extract_snippet(item, 160)
+            output.append(f"- [{title}]({url}) | Source: {src_label}{score_text}")
+            if snippet:
+                output.append(f"  Snippet: {snippet}")
         if len(items) > 5:
             output.append(f"  *... and {len(items) - 5} more*")
         output.append("")

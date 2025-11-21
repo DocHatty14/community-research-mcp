@@ -39,6 +39,7 @@ import os
 import re
 import time
 import urllib.parse
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -56,6 +57,9 @@ try:
         SystemCapabilities,
         detect_all_capabilities,
         format_capabilities_report,
+        classify_result,
+        summarize_content_shapes,
+        SOURCE_LABELS,
     )
     from streaming_search import (
         get_all_search_results_streaming,
@@ -66,6 +70,10 @@ try:
 except ImportError:
     STREAMING_AVAILABLE = False
     print("Note: Streaming capabilities unavailable")
+    SOURCE_LABELS = {}
+
+    def summarize_content_shapes(results_by_source: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+        return {"per_source": {}, "totals": {}}
 
 # Import enhanced MCP utilities for production-grade reliability
 try:
@@ -138,6 +146,93 @@ CACHE_TTL_SECONDS = 3600  # 1 hour
 RATE_LIMIT_WINDOW = 60  # seconds
 RATE_LIMIT_MAX_CALLS = 10
 
+# Source guardrails and defaults
+SOURCE_POLICIES: Dict[str, Dict[str, Any]] = {
+    "stackoverflow": {
+        "min_query_length": 10,
+        "max_results": 15,
+        "max_results_expanded": 30,
+        "read_only": True,
+        "fallback": "duckduckgo",
+    },
+    "github": {
+        "min_query_length": 10,
+        "max_results": 15,
+        "max_results_expanded": 30,
+        "read_only": True,
+        "fallback": "duckduckgo",
+    },
+    "reddit": {
+        "min_query_length": 10,
+        "max_results": 15,
+        "max_results_expanded": 30,
+        "read_only": True,
+        "fallback": "duckduckgo",
+    },
+    "hackernews": {
+        "min_query_length": 8,
+        "max_results": 10,
+        "max_results_expanded": 20,
+        "read_only": True,
+    },
+    "duckduckgo": {
+        "min_query_length": 6,
+        "max_results": 15,
+        "max_results_expanded": 30,
+        "read_only": True,
+    },
+}
+
+# Deterministic fixtures for health/diagnostic mode (no live calls)
+TEST_FIXTURES: Dict[str, List[Dict[str, Any]]] = {
+    "stackoverflow": [
+        {
+            "title": "How to safely add MCP tool fallback?",
+            "url": "https://stackoverflow.com/q/example-mcp",
+            "score": 5,
+            "answer_count": 1,
+            "snippet": "Use a retry wrapper and a fallback search source to avoid total failure.",
+        }
+    ],
+    "github": [
+        {
+            "title": "Add guardrails to MCP server",
+            "url": "https://github.com/example/mcp/pull/1",
+            "state": "open",
+            "comments": 2,
+            "snippet": "Implements allowlists and quotas for MCP tool actions.",
+        }
+    ],
+    "reddit": [
+        {
+            "title": "Using MCP to wrap database access safely",
+            "url": "https://www.reddit.com/r/python/comments/example_mcp/",
+            "score": 12,
+            "comments": 3,
+            "snippet": "Wrap DB calls behind MCP tools with explicit allowlists.",
+            "authenticated": False,
+        }
+    ],
+    "hackernews": [
+        {
+            "title": "Lessons learned building MCP integrations",
+            "url": "https://news.ycombinator.com/item?id=123456",
+            "points": 120,
+            "comments": 10,
+            "snippet": "",
+        }
+    ],
+    "duckduckgo": [
+        {
+            "title": "MCP search fallback example",
+            "url": "https://example.com/mcp-fallback",
+            "snippet": "Demonstrates DDG fallback when primary sources fail.",
+            "content": "",
+            "source": "duckduckgo",
+        }
+    ],
+}
+
 # Global state
 _cache: Dict[str, Dict[str, Any]] = {}
 _rate_limit_tracker: Dict[str, List[float]] = {}
@@ -207,6 +302,14 @@ class CommunitySearchInput(BaseModel):
     thinking_mode: str = Field(
         default="balanced",
         description="Analysis depth mode: 'quick' (fast, basic), 'balanced' (default), or 'deep' (thorough, slower)",
+    )
+    expanded_mode: bool = Field(
+        default=False,
+        description="If true, allow expanded result budgets per source (higher caps, still read-only).",
+    )
+    use_fixtures: bool = Field(
+        default=False,
+        description="If true, return deterministic fixture data without hitting live sources (for health checks).",
     )
 
     @field_validator("topic")
@@ -441,6 +544,50 @@ def set_cached_result(cache_key: str, result: str) -> None:
     save_cache()
 
 
+def validate_topic_specificity(topic: str) -> tuple[bool, str]:
+    """
+    Validate that a topic is specific enough for useful search results.
+    This mirrors the pydantic validator but returns a tuple for tool usage.
+    """
+    cleaned = topic.strip()
+
+    if len(cleaned) < 10:
+        return (
+            False,
+            "Topic is too short. Include specific technologies, goals, or patterns (>=10 chars).",
+        )
+
+    vague_terms = {
+        "settings",
+        "configuration",
+        "config",
+        "setup",
+        "performance",
+        "optimization",
+        "best practices",
+        "how to",
+        "tutorial",
+        "getting started",
+        "basics",
+        "help",
+        "issue",
+        "problem",
+        "error",
+        "debugging",
+        "install",
+        "installation",
+    }
+
+    words = cleaned.lower().split()
+    if len(words) <= 2 and any(term in cleaned.lower() for term in vague_terms):
+        return (
+            False,
+            f"Topic '{cleaned}' is too vague. Add concrete technologies and goals (e.g., 'FastAPI background tasks with Redis').",
+        )
+
+    return True, ""
+
+
 def check_rate_limit(tool_name: str) -> bool:
     """
     Check if tool call is within rate limit.
@@ -462,6 +609,41 @@ def check_rate_limit(tool_name: str) -> bool:
     # Add current timestamp
     _rate_limit_tracker[tool_name].append(now)
     return True
+
+
+def _result_only_sources(results: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    """Filter out non-list metadata keys from aggregated results."""
+    return {k: v for k, v in results.items() if isinstance(v, list)}
+
+
+def total_result_count(results: Dict[str, Any]) -> int:
+    """Compute total result count, ignoring metadata keys."""
+    return sum(len(v) for v in results.values() if isinstance(v, list))
+
+
+def normalize_query_for_policy(query: str) -> str:
+    """Normalize query whitespace for guardrail checks."""
+    return " ".join(query.split()).strip()
+
+
+def build_audit_entry(
+    source: str,
+    status: str,
+    duration_ms: float,
+    result_count: int,
+    error: Optional[str] = None,
+    used_fallback: bool = False,
+) -> Dict[str, Any]:
+    """Structured audit entry for a single source call."""
+    return {
+        "source": source,
+        "status": status,
+        "duration_ms": round(duration_ms, 2),
+        "result_count": result_count,
+        "error": error,
+        "used_fallback": used_fallback,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
 
 
 # ============================================================================
@@ -743,55 +925,354 @@ async def search_duckduckgo(
         return []
 
 
-async def aggregate_search_results(query: str, language: str) -> Dict[str, Any]:
-    """Run all searches in parallel and aggregate results with resilient API calls."""
+async def aggregate_search_results(
+    query: str, language: str, expanded_mode: bool = False, use_fixtures: bool = False
+) -> Dict[str, Any]:
+    """Run all searches with guardrails, fallbacks, and scoring metadata."""
     perf_monitor = get_performance_monitor() if ENHANCED_UTILITIES_AVAILABLE else None
     start_time = time.time()
+    normalized_query = normalize_query_for_policy(query)
+    use_fixture_data = use_fixtures or os.getenv("CR_MCP_USE_FIXTURES") == "1"
+    audit_log: List[Dict[str, Any]] = []
 
-    # Use resilient API calls if available
-    if ENHANCED_UTILITIES_AVAILABLE:
-        tasks = [
-            resilient_api_call(search_stackoverflow, query, language),
-            resilient_api_call(search_github, query, language),
-            resilient_api_call(search_reddit, query, language),
-            resilient_api_call(search_hackernews, query),
-            resilient_api_call(search_duckduckgo, f"{language} {query}"),
-        ]
-    else:
-        tasks = [
-            search_stackoverflow(query, language),
-            search_github(query, language),
-            search_reddit(query, language),
-            search_hackernews(query),
-            search_duckduckgo(f"{language} {query}"),
-        ]
+    # Fixture path: deterministic, read-only, no network
+    if use_fixture_data:
+        capped_results = {}
+        for source, items in TEST_FIXTURES.items():
+            policy = SOURCE_POLICIES.get(source, {})
+            cap = policy.get(
+                "max_results_expanded" if expanded_mode else "max_results", len(items)
+            )
+            capped_results[source] = list(items)[:cap]
+            audit_log.append(
+                build_audit_entry(
+                    source=source,
+                    status="fixture",
+                    duration_ms=0.0,
+                    result_count=len(capped_results[source]),
+                    used_fallback=False,
+                )
+            )
+        capped_results["_meta"] = {
+            "audit_log": audit_log,
+            "used_fixtures": True,
+        }
+        capped_results["_meta"]["all_star"] = build_all_star_index(
+            capped_results, normalized_query, language
+        )
+        return capped_results
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    async def run_source(
+        source: str, func: Any, lang: str, q: str
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        policy = SOURCE_POLICIES.get(source, {})
+        min_len = policy.get("min_query_length", 0)
+        if len(q) < min_len:
+            entry = build_audit_entry(
+                source=source,
+                status="rejected",
+                duration_ms=0.0,
+                result_count=0,
+                error=f"query_too_short (min {min_len})",
+            )
+            return [], entry
 
-    raw_results = {
-        "stackoverflow": results[0] if isinstance(results[0], list) else [],
-        "github": results[1] if isinstance(results[1], list) else [],
-        "reddit": results[2] if isinstance(results[2], list) else [],
-        "hackernews": results[3] if isinstance(results[3], list) else [],
-        "duckduckgo": results[4] if isinstance(results[4], list) else [],
+        cap = policy.get(
+            "max_results_expanded" if expanded_mode else "max_results", 15
+        )
+        start = time.time()
+        error_msg = None
+        used_fallback = False
+
+        try:
+            if ENHANCED_UTILITIES_AVAILABLE:
+                if source in {"hackernews", "duckduckgo"}:
+                    raw = await resilient_api_call(func, q)
+                else:
+                    raw = await resilient_api_call(func, q, lang)
+            else:
+                if source in {"hackernews", "duckduckgo"}:
+                    raw = await func(q)
+                else:
+                    raw = await func(q, lang)
+        except Exception as exc:
+            raw = []
+            error_msg = f"{type(exc).__name__}: {exc}"
+
+        duration_ms = (time.time() - start) * 1000
+        results = raw if isinstance(raw, list) else []
+
+        # Fallback to DuckDuckGo if configured and no results
+        if not results and policy.get("fallback") == "duckduckgo":
+            try:
+                fb_query = f"{lang} {q}"
+                fb_results = await search_duckduckgo(fb_query)
+                results = fb_results[:cap] if isinstance(fb_results, list) else []
+                used_fallback = True
+                if not error_msg:
+                    error_msg = "primary_empty_fallback_used"
+            except Exception as fb_exc:
+                error_msg = error_msg or f"{type(fb_exc).__name__}: {fb_exc}"
+
+        results = results[:cap] if results else []
+        entry = build_audit_entry(
+            source=source,
+            status="ok" if results else "empty",
+            duration_ms=duration_ms,
+            result_count=len(results),
+            error=error_msg,
+            used_fallback=used_fallback,
+        )
+        return results, entry
+
+    tasks = {
+        "stackoverflow": asyncio.create_task(
+            run_source("stackoverflow", search_stackoverflow, language, normalized_query)
+        ),
+        "github": asyncio.create_task(
+            run_source("github", search_github, language, normalized_query)
+        ),
+        "reddit": asyncio.create_task(
+            run_source("reddit", search_reddit, language, normalized_query)
+        ),
+        "hackernews": asyncio.create_task(
+            run_source("hackernews", search_hackernews, language, normalized_query)
+        ),
+        "duckduckgo": asyncio.create_task(
+            run_source("duckduckgo", search_duckduckgo, language, normalized_query)
+        ),
     }
 
+    raw_results: Dict[str, Any] = {}
+    for source, task in tasks.items():
+        results, audit_entry = await task
+        raw_results[source] = results
+        audit_log.append(audit_entry)
+
     # Apply deduplication if available
-    if ENHANCED_UTILITIES_AVAILABLE:
-        deduped_results = deduplicate_results(raw_results)
+    deduped_results = (
+        deduplicate_results(raw_results)
+        if ENHANCED_UTILITIES_AVAILABLE
+        else raw_results
+    )
 
-        # Record performance metrics
-        if perf_monitor:
-            search_duration = time.time() - start_time
-            perf_monitor.record_search_time(search_duration)
-            perf_monitor.total_results_found += sum(
-                len(r) for r in deduped_results.values()
-            )
+    if perf_monitor:
+        search_duration = time.time() - start_time
+        perf_monitor.record_search_time(search_duration)
+        perf_monitor.total_results_found += total_result_count(deduped_results)
 
-        return deduped_results
+    deduped_results["_meta"] = {
+        "audit_log": audit_log,
+        "used_fixtures": False,
+    }
+    deduped_results["_meta"]["all_star"] = build_all_star_index(
+        deduped_results, normalized_query, language
+    )
+    return deduped_results
 
-    return raw_results
 
+# ============================================================================
+# All-Star Scoring & Normalization
+# ============================================================================
+
+
+def _safe_domain(url: str) -> str:
+    try:
+        return urllib.parse.urlparse(url).netloc or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _snippet_has_code(snippet: str) -> bool:
+    return "```" in snippet or "<code" in snippet.lower()
+
+
+def _estimate_recency_days(item: Dict[str, Any]) -> Optional[float]:
+    candidates = [
+        item.get("created_at"),
+        item.get("creation_date"),
+        item.get("updated_at"),
+        item.get("last_activity_date"),
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            if isinstance(candidate, (int, float)):
+                dt = datetime.fromtimestamp(candidate)
+            else:
+                dt = datetime.fromisoformat(str(candidate).replace("Z", "+00:00"))
+            return max(0.0, (datetime.utcnow() - dt).total_seconds() / 86400.0)
+        except Exception:
+            continue
+    return None
+
+
+def _token_overlap_score(text: str, query: str) -> float:
+    q_tokens = {t for t in re.findall(r"[a-zA-Z0-9]+", query.lower()) if len(t) > 2}
+    if not q_tokens:
+        return 0.0
+    words = {t for t in re.findall(r"[a-zA-Z0-9]+", text.lower()) if len(t) > 2}
+    if not words:
+        return 0.0
+    overlap = len(q_tokens & words)
+    return min(1.0, overlap / len(q_tokens))
+
+
+def normalize_item_for_scoring(
+    source: str, item: Dict[str, Any], query: str, language: str
+) -> Optional[Dict[str, Any]]:
+    url = item.get("url") or item.get("link") or ""
+    if not url:
+        return None
+
+    snippet = item.get("snippet") or item.get("content") or ""
+    if snippet is None:
+        snippet = ""
+    snippet = str(snippet)
+    if not snippet.strip():
+        return None
+
+    title = item.get("title") or item.get("name") or "Untitled"
+    fingerprint = hashlib.md5(f"{source}:{url}".encode("utf-8")).hexdigest()
+    domain = _safe_domain(url)
+    has_code = _snippet_has_code(snippet)
+    recency_days = _estimate_recency_days(item)
+    overlap = _token_overlap_score(f"{title} {snippet}", f"{language} {query}")
+
+    return {
+        "source": source,
+        "title": title,
+        "url": url,
+        "snippet": snippet[:800],
+        "fingerprint": fingerprint,
+        "domain": domain,
+        "has_code": has_code,
+        "score_votes": item.get("score", 0) or item.get("points", 0),
+        "comments": item.get("comments", 0) or item.get("answer_count", 0),
+        "recency_days": recency_days,
+        "overlap": overlap,
+        "raw": item,
+    }
+
+
+def compute_multi_factor_score(
+    normalized: Dict[str, Any], corroboration: int, diversity_penalty: float
+) -> float:
+    source_weight = {
+        "stackoverflow": 1.0,
+        "github": 0.95,
+        "hackernews": 0.75,
+        "reddit": 0.7,
+        "duckduckgo": 0.6,
+    }.get(normalized["source"], 0.5)
+
+    recency = normalized.get("recency_days")
+    if recency is None:
+        recency_score = 0.5
+    else:
+        recency_score = max(0.0, min(1.0, 1.0 - (recency / 365.0)))
+
+    overlap = normalized.get("overlap", 0.0)
+    community = min(1.0, (normalized.get("score_votes", 0) + normalized.get("comments", 0)) / 100.0)
+    richness = 0.6 if normalized.get("has_code") else 0.3
+    corroboration_bonus = min(0.3, (corroboration - 1) * 0.1) if corroboration > 1 else 0.0
+
+    base = (
+        (source_weight * 0.3)
+        + (recency_score * 0.15)
+        + (overlap * 0.25)
+        + (richness * 0.15)
+        + (community * 0.1)
+        + corroboration_bonus
+    )
+
+    # Apply diversity penalty so one domain doesn't dominate
+    return max(0.0, min(1.0, base - diversity_penalty))
+
+
+def build_all_star_index(
+    results: Dict[str, Any], query: str, language: str
+) -> Dict[str, Any]:
+    """Normalize, score, and assemble an 'all-star' list with corroboration."""
+    source_lists = _result_only_sources(results)
+    normalized_items: List[Dict[str, Any]] = []
+
+    for source, items in source_lists.items():
+        for item in items:
+            norm = normalize_item_for_scoring(source, item, query, language)
+            if norm:
+                normalized_items.append(norm)
+
+    if not normalized_items:
+        return {"top_overall": [], "buckets": {}, "stats": {"total": 0}}
+
+    # Corroboration counts
+    counts = Counter([n["fingerprint"] for n in normalized_items])
+    domain_counts = Counter([n["domain"] for n in normalized_items])
+
+    scored_items = []
+    for n in normalized_items:
+        diversity_penalty = max(0, domain_counts[n["domain"]] - 1) * 0.02
+        score = compute_multi_factor_score(n, counts[n["fingerprint"]], diversity_penalty)
+        scored_items.append(
+            {
+                **n,
+                "all_star_score": round(score * 100, 2),
+                "corroboration": counts[n["fingerprint"]],
+                "verification_status": "verified"
+                if counts[n["fingerprint"]] > 1
+                else "unverified",
+            }
+        )
+
+    scored_items.sort(key=lambda x: x["all_star_score"], reverse=True)
+
+    # Buckets (how-to/code/warnings) using existing classifier
+    buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for item in scored_items:
+        bucket = classify_result(item["raw"], item["source"]).value
+        buckets.setdefault(bucket, []).append(item)
+
+    top_buckets = {
+        bucket: [
+            {
+                "title": i["title"],
+                "url": i["url"],
+                "source": i["source"],
+                "score": i["all_star_score"],
+                "corroboration": i["corroboration"],
+                "verification_status": i["verification_status"],
+                "reason": f"{i['source']} credibility, overlap {int(i['overlap']*100)}%, "
+                f"corroboration x{i['corroboration']}, code={i['has_code']}",
+            }
+            for i in items[:3]
+        ]
+        for bucket, items in buckets.items()
+    }
+
+    top_overall = [
+        {
+            "title": i["title"],
+            "url": i["url"],
+            "source": i["source"],
+            "score": i["all_star_score"],
+            "corroboration": i["corroboration"],
+            "verification_status": i["verification_status"],
+            "reason": f"{i['source']} weight + recency + overlap + corroboration",
+        }
+        for i in scored_items[:5]
+    ]
+
+    return {
+        "top_overall": top_overall,
+        "buckets": top_buckets,
+        "stats": {
+            "total": len(normalized_items),
+            "corroborated": sum(1 for i in scored_items if i["corroboration"] > 1),
+            "domains": len(domain_counts),
+        },
+    }
 
 # ============================================================================
 # LLM Synthesis
@@ -1432,9 +1913,10 @@ async def cluster_and_rerank_results(
     Organize search results into semantic clusters and remove low-quality items.
     """
     try:
+        source_lists = _result_only_sources(search_results)
         # Flatten results for clustering
         all_items = []
-        for source, items in search_results.items():
+        for source, items in source_lists.items():
             for item in items:
                 all_items.append(
                     {
@@ -1813,9 +2295,8 @@ async def comparative_search(
 
         # Execute search
         search_results = await aggregate_search_results(search_query, language)
-
-        # Check if we got any results
-        total_results = sum(len(results) for results in search_results.values())
+        source_lists = _result_only_sources(search_results)
+        total_results = total_result_count(search_results)
         if total_results == 0:
             result = json.dumps(
                 {
@@ -1837,7 +2318,7 @@ async def comparative_search(
         if len(available_models) < 2:
             # Fallback to single model synthesis with note
             synthesis = await synthesize_with_llm(
-                search_results, topic, language, goal, current_setup
+                source_lists, topic, language, goal, current_setup
             )
             synthesis["comparative_note"] = (
                 f"Only {len(available_models)} model(s) available. Configure multiple API keys for true comparative analysis."
@@ -1858,17 +2339,17 @@ async def comparative_search(
                 if provider == "gemini":
                     api_key = model_orchestrator._get_api_key_for_provider(provider)
                     model_synthesis = await synthesize_with_llm(
-                        search_results, topic, language, goal, current_setup
+                        source_lists, topic, language, goal, current_setup
                     )
                 elif provider == "openai":
                     api_key = model_orchestrator._get_api_key_for_provider(provider)
                     model_synthesis = await synthesize_with_llm(
-                        search_results, topic, language, goal, current_setup
+                        source_lists, topic, language, goal, current_setup
                     )
                 elif provider == "anthropic":
                     api_key = model_orchestrator._get_api_key_for_provider(provider)
                     model_synthesis = await synthesize_with_llm(
-                        search_results, topic, language, goal, current_setup
+                        source_lists, topic, language, goal, current_setup
                     )
                 else:
                     # Skip providers we can't handle
@@ -1899,10 +2380,10 @@ async def comparative_search(
                 "synthesis_notes": f"Compared findings from {len(model_results)} different AI models",
             },
             "sources_searched": {
-                "stackoverflow": len(search_results["stackoverflow"]),
-                "github": len(search_results["github"]),
-                "reddit": len(search_results["reddit"]),
-                "hackernews": len(search_results["hackernews"]),
+                "stackoverflow": len(source_lists.get("stackoverflow", [])),
+                "github": len(source_lists.get("github", [])),
+                "reddit": len(source_lists.get("reddit", [])),
+                "hackernews": len(source_lists.get("hackernews", [])),
             },
         }
 
@@ -2021,9 +2502,8 @@ async def validated_research(
 
         # Execute search
         search_results = await aggregate_search_results(search_query, language)
-
-        # Check if we got any results
-        total_results = sum(len(results) for results in search_results.values())
+        source_lists = _result_only_sources(search_results)
+        total_results = total_result_count(search_results)
         if total_results == 0:
             result = json.dumps(
                 {
@@ -2037,7 +2517,7 @@ async def validated_research(
 
         # Use enhanced multi-model synthesis with validation
         synthesis = await synthesize_with_multi_model(
-            search_results, topic, language, goal, current_setup, thinking_mode_enum
+            source_lists, topic, language, goal, current_setup, thinking_mode_enum
         )
 
         # Add validation-specific metadata
@@ -2203,6 +2683,8 @@ async def community_search(params: CommunitySearchInput) -> str:
         topic=params.topic,
         goal=params.goal,
         current_setup=params.current_setup,
+        expanded_mode=params.expanded_mode,
+        use_fixtures=params.use_fixtures,
     )
 
     cached_result = get_cached_result(cache_key)
@@ -2219,11 +2701,18 @@ async def community_search(params: CommunitySearchInput) -> str:
         try:
             # Search all sources in parallel
             search_results = await aggregate_search_results(
-                search_query, params.language
+                search_query,
+                params.language,
+                expanded_mode=params.expanded_mode,
+                use_fixtures=params.use_fixtures,
             )
 
-            # Check if we got any results
-            total_results = sum(len(results) for results in search_results.values())
+            source_lists = _result_only_sources(search_results)
+            total_results = total_result_count(search_results)
+            all_star_meta = search_results.get("_meta", {}).get("all_star", {})
+            audit_log = search_results.get("_meta", {}).get("audit_log", [])
+            shape_stats = summarize_content_shapes(source_lists)
+
             if total_results == 0:
                 result = json.dumps(
                     {
@@ -2237,7 +2726,7 @@ async def community_search(params: CommunitySearchInput) -> str:
 
             # Synthesize with LLM
             synthesis = await synthesize_with_llm(
-                search_results,
+                source_lists,
                 params.topic,
                 params.language,
                 params.goal,
@@ -2257,8 +2746,8 @@ async def community_search(params: CommunitySearchInput) -> str:
             # Format response
             if params.response_format == ResponseFormat.MARKDOWN:
                 lines = [
-                    f"# Community Research Results",
-                    f"## {params.topic}",
+                    f"# {params.topic}",
+                    f"**Direct Answer:** {synthesis.get('synthesis_summary', 'No synthesis available.')}",
                     "",
                     f"**Language:** {params.language}",
                     "",
@@ -2270,9 +2759,18 @@ async def community_search(params: CommunitySearchInput) -> str:
 
                 findings = synthesis.get("findings", [])
                 if findings:
-                    lines.append(
-                        f"## Research Findings: {len(findings)} Recommendations"
-                    )
+                    lines.append(f"## Key Findings ({len(findings)})")
+                    lines.append("_Concise takeaways before details_")
+                    lines.append("")
+                    for i, finding in enumerate(findings, 1):
+                        benefit = finding.get("benefit") or finding.get("solution", "")
+                        summary_line = benefit.split("\n")[0][:220] if isinstance(benefit, str) else "See details below."
+                        lines.append(
+                            f"- {i}. {finding.get('title', 'Recommendation')} — {summary_line} (Difficulty: {finding.get('difficulty', 'Unknown')}, Community Score: {finding.get('community_score', 'N/A')}/100)"
+                        )
+                    lines.append("")
+
+                    lines.append("## Detailed Recommendations")
                     if ENHANCED_UTILITIES_AVAILABLE:
                         lines.append(
                             "*Enhanced with quality scoring and intelligent deduplication*"
@@ -2315,22 +2813,47 @@ async def community_search(params: CommunitySearchInput) -> str:
                     # Add source summary
                     lines.append("---")
                     lines.append("")
-                    lines.append("## Sources Searched")
+                    lines.append("## Sources & Content Metrics")
+                    lines.append("")
+                    for source, stats in shape_stats.get("per_source", {}).items():
+                        shapes = stats.get("shapes", {})
+                        shape_parts = [
+                            f"{name}:{count}"
+                            for name, count in shapes.items()
+                            if isinstance(count, int) and count > 0
+                        ]
+                        shape_text = ", ".join(shape_parts) if shape_parts else "no text captured"
+                        label = stats.get("label", SOURCE_LABELS.get(source, source))
+                        lines.append(
+                            f"- {label}: {stats.get('total', 0)} items ({shape_text})"
+                        )
                     lines.append("")
                     lines.append(
-                        f"- **Stack Overflow:** {len(search_results['stackoverflow'])} results"
-                    )
-                    lines.append(
-                        f"- **GitHub:** {len(search_results['github'])} results"
-                    )
-                    lines.append(
-                        f"- **Reddit:** {len(search_results['reddit'])} results"
-                    )
-                    lines.append(
-                        f"- **Hacker News:** {len(search_results['hackernews'])} results"
+                        "_Content sizes: sentence ≤200 chars · paragraph ≤800 chars · page >800 chars_"
                     )
                     lines.append("")
                     lines.append(f"**Total Results Found:** {total_results}")
+
+                # Add All-Star snapshot
+                if all_star_meta.get("top_overall"):
+                    lines.append("")
+                    lines.append("## All-Star (auto-scored, corroborated)")
+                    for item in all_star_meta["top_overall"]:
+                        lines.append(
+                            f"- {item['title']} ({item['source']}) | score {item['score']} | corroboration x{item['corroboration']} | {item['url']}"
+                        )
+
+                # Append audit summary
+                if audit_log:
+                    lines.append("")
+                    lines.append("## Audit (per-source)")
+                    for entry in audit_log:
+                        lines.append(
+                            f"- {entry['source']}: {entry['status']} ({entry['result_count']} results, {entry['duration_ms']}ms"
+                            + (", fallback" if entry.get("used_fallback") else "")
+                            + (f", error={entry['error']}" if entry.get("error") else "")
+                            + ")"
+                        )
 
                 result = "\n".join(lines)
             else:
@@ -2342,11 +2865,13 @@ async def community_search(params: CommunitySearchInput) -> str:
                     "findings": synthesis.get("findings", []),
                     "error": synthesis.get("error"),
                     "sources_searched": {
-                        "stackoverflow": len(search_results["stackoverflow"]),
-                        "github": len(search_results["github"]),
-                        "reddit": len(search_results["reddit"]),
-                        "hackernews": len(search_results["hackernews"]),
+                        "stackoverflow": len(source_lists.get("stackoverflow", [])),
+                        "github": len(source_lists.get("github", [])),
+                        "reddit": len(source_lists.get("reddit", [])),
+                        "hackernews": len(source_lists.get("hackernews", [])),
                     },
+                    "all_star": all_star_meta,
+                    "audit": audit_log,
                 }
                 result = json.dumps(response, indent=2)
 
@@ -3307,9 +3832,8 @@ async def streaming_community_search(
         return error_msg
 
     # Check rate limiting
-    rate_limit_ok, limit_msg = check_rate_limit("streaming_community_search")
-    if not rate_limit_ok:
-        return limit_msg
+    if not check_rate_limit("streaming_community_search"):
+        return "Rate limit exceeded. Please wait a minute before retrying."
 
     try:
         # Prepare search functions
@@ -3439,10 +3963,10 @@ async def deep_community_search(
         )
 
         # Merge results
-        combined_results = initial_results.copy()
+        combined_results = _result_only_sources(initial_results)
         for res in follow_up_results_list:
             if isinstance(res, dict):
-                for source, items in res.items():
+                for source, items in _result_only_sources(res).items():
                     if source in combined_results:
                         combined_results[source].extend(items)
                     else:
