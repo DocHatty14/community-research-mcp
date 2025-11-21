@@ -4057,18 +4057,31 @@ async def deep_community_search(
         }}
         """
 
-        # Call model for gap analysis (simulated call for now, replacing with direct logic if needed)
-        # For robust implementation, we'd use the orchestrator.
-        # To save complexity in this single file, we'll assume a simple heuristic or direct call if possible.
-        # But since we don't have a generic 'call_model' exposed easily, we'll generate queries deterministically for now
-        # to ensure it works without breaking.
+        # Call LLM for real gap analysis
+        follow_up_queries = []
+        try:
+            gap_response = await call_gemini(api_key, gap_analysis_prompt)
+            if gap_response and isinstance(gap_response, dict):
+                # Try to extract follow_up_queries from the response
+                if "follow_up_queries" in gap_response:
+                    follow_up_queries = gap_response["follow_up_queries"][:3]
+                # If the response is wrapped in a text field, try to parse it
+                elif "text" in gap_response:
+                    try:
+                        parsed = json.loads(gap_response["text"])
+                        follow_up_queries = parsed.get("follow_up_queries", [])[:3]
+                    except json.JSONDecodeError:
+                        pass
+        except Exception as gap_error:
+            logging.warning(f"Gap analysis failed, using fallback: {gap_error}")
 
-        # deterministic follow-up for robustness in this iteration:
-        follow_up_queries = [
-            f"{language} {topic} advanced usage",
-            f"{language} {topic} best practices",
-            f"{language} {topic} common pitfalls",
-        ]
+        # Fallback to deterministic queries if AI gap analysis fails
+        if not follow_up_queries:
+            follow_up_queries = [
+                f"{language} {topic} advanced usage",
+                f"{language} {topic} best practices",
+                f"{language} {topic} common pitfalls",
+            ]
 
         # Step 3: Follow-up Searches
         print(f"🕵️ [Deep Search] Running {len(follow_up_queries)} follow-up searches...")

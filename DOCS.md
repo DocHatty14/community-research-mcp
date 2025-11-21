@@ -88,12 +88,16 @@ Multi-iteration research loop:
 Use for: Complex architectural decisions, unfamiliar tech stacks.
 
 #### `validated_research(...)`
-Runs search, then uses a **second LLM** (different provider) to critique findings for:
+**Requires:** `ENABLE_MULTI_MODEL_VALIDATION=true` in `.env` (disabled by default to save costs)
+
+When enabled, runs search then uses a **second LLM** (different provider) to critique findings for:
 - Security vulnerabilities
 - Deprecated methods
 - Logical inconsistencies
 
 Use for: Authentication flows, security-critical implementations.
+
+**Cost:** 2x API calls (primary synthesis + validation critique)
 
 ---
 

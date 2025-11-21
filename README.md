@@ -59,9 +59,11 @@ Mimics a senior engineer's research process:
 
 Visits actual webpages to scrape full documentation and GitHub issue threads. No more relying on 2-line search snippets.
 
-### Multi-Model Validation
+### Multi-Model Validation (Opt-In)
 
-When you need certainty, a second independent AI model critiques the findings to check for security flaws, deprecated methods, and logical inconsistencies.
+**Disabled by default.** When enabled via `.env`, a second independent AI model critiques the findings to check for security flaws, deprecated methods, and logical inconsistencies.
+
+Requires: `ENABLE_MULTI_MODEL_VALIDATION=true` in `.env` (costs 2x API calls)
 
 ### Parallel Streaming
 
