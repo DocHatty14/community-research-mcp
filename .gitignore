@@ -1,1 +1,8 @@
+# Environment files (API keys, secrets)
 .env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.test
+*.env
