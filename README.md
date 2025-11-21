@@ -5,8 +5,24 @@
 
 A Model Context Protocol server that bypasses generic AI training data to tap directly into the living wisdom of the developer community.
 
-[![Status](https://img.shields.io/badge/Status-Production_Ready-success?style=flat-square)](https://github.com/your-repo/community-research-mcp)
+[![Status](https://img.shields.io/badge/Status-Hobby_Project-yellow?style=flat-square)](https://github.com/DocHatty/community-research-mcp)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+
+---
+
+## Current State
+
+**This is a hobby project** for personal use and experimentation. It works well for:
+- Individual developers debugging obscure issues
+- Research that requires aggregating community wisdom
+- Automating the manual tab-hopping you already do
+
+**Not recommended for:**
+- Production systems or teams (no SLA, no support)
+- Rate-sensitive workflows (you're responsible for API costs/limits)
+- Anything requiring legal compliance review
+
+If you use this, you're opting into the same risks you take manually scraping Stack Overflow at 2 AM.
 
 ---
 
@@ -51,17 +67,37 @@ Results stream in real-time as they're found:
 
 ### Quality Scoring
 
-Every result is scored 0-100 based on source authority, community validation, recency, and specificity.
+Results are scored 0-100 using heuristics that seem reasonable:
+- Source authority: Stack Overflow > GitHub > Reddit (25%)
+- Community validation: upvotes, stars, answer counts (30%)
+- Recency: newer content scores higher (15%)
+- Specificity: detailed solutions > generic advice (20%)
+- Evidence: code examples, benchmarks (10%)
+
+These weights are somewhat arbitrary and not configurable. They generally help surface better results, but you might disagree with the priorities.
 
 ---
 
 ## Installation
 
+**Quick start:**
 ```bash
-git clone https://github.com/your-repo/community-research-mcp.git
+git clone https://github.com/DocHatty/community-research-mcp.git
 cd community-research-mcp
+
+# Windows
 initialize.bat
+
+# Linux/Mac
+chmod +x setup.sh
+./setup.sh
+
+# Or manually
+pip install -e .
+cp .env.example .env
 ```
+
+**Cross-platform:** Works on Windows, Linux, macOS
 
 Configure your API keys in `.env`:
 
@@ -79,6 +115,44 @@ REDDIT_CLIENT_SECRET=your_secret
 ---
 
 ## Usage
+
+### Example Output
+
+**Query:** "Rust wgpu PipelineCompilationOptions removed in latest version"
+
+**Result:**
+```markdown
+# Community Research: wgpu PipelineCompilationOptions
+
+## 🔍 Stack Overflow (Score: 85)
+**Issue:** `compilation_options` field removed in wgpu 0.19
+**Solution:** Use `ShaderModuleDescriptor` directly
+[Source](https://stackoverflow.com/questions/...)
+
+## 🐛 GitHub Issue #4528 (Score: 92)
+**Breaking change:** PipelineCompilationOptions deprecated in favor of new descriptor API
+**Migration code from Bevy engine team:**
+```rust
+// Old (0.18)
+let shader = device.create_shader_module(ShaderModuleDescriptor {
+    compilation_options: PipelineCompilationOptions::default(),
+    ..
+});
+
+// New (0.19+)
+let shader = device.create_shader_module(ShaderModuleDescriptor {
+    label: Some("shader"),
+    source: ShaderSource::Wgsl(code.into()),
+});
+```
+[wgpu Issue #4528](https://github.com/gfx-rs/wgpu/issues/4528)
+
+## 💬 Reddit r/rust_gamedev (Score: 78)
+Discussion: "wgpu 0.19 breaking changes megathread"
+Recommended: Update to new descriptor pattern, old API completely removed
+```
+
+---
 
 ### Standard Search
 
@@ -145,26 +219,25 @@ All searches are cached locally with 24-hour TTL for instant repeated queries.
 
 ## Performance
 
-| Metric | Value |
-|--------|-------|
-| Time to First Result | ~0.8s |
-| Full Search Completion | ~4s |
-| API Reliability | 99.5% |
-| Cache Hit Rate | Varies |
-| Duplicate Reduction | ~20% |
+**Best case** (cached, simple query, fast network):
+- First results: 1-2 seconds
+- Full synthesis: 4-6 seconds
+
+**Typical case** (real-world usage):
+- First results: 2-5 seconds
+- Full synthesis: 10-20 seconds
+
+**Worst case** (rate limits, slow APIs, complex queries):
+- First results: 5-10 seconds  
+- Full synthesis: 30+ seconds
+
+Performance depends on network latency, API rate limits, query complexity, LLM provider speed, and whether results are cached. The "~0.8s Stack Overflow" claim assumes cache hits and no rate limiting—not realistic for sustained use.
 
 ---
 
 ## Documentation
 
-Comprehensive documentation available in [DOCUMENTATION.md](DOCUMENTATION.md):
-
-- Installation and configuration
-- Complete API reference
-- Architecture and data flow
-- Advanced features
-- Best practices
-- Troubleshooting
+See [DOCS.md](DOCS.md) for API reference.
 
 ---
 
@@ -173,6 +246,65 @@ Comprehensive documentation available in [DOCUMENTATION.md](DOCUMENTATION.md):
 - Python 3.8+
 - API key for at least one LLM provider (Gemini, OpenAI, or Anthropic)
 - Internet connection for search APIs
+
+---
+
+## Costs & Legal
+
+**API Costs:**
+- Search APIs are free (Stack Overflow, GitHub, Reddit, HN)
+- LLM costs: ~$0.001-0.03 per search depending on provider
+- Deep research with validation: ~$0.05-0.15 per query
+- Typical usage: $0-5/month for personal projects
+
+**Rate Limits:**
+You're subject to rate limits from each API. Without authentication:
+- Stack Overflow: 300 requests/day
+- GitHub: 60 requests/hour
+- Reddit: Limited access
+
+See `.env.example` for how to add API keys to increase limits.
+
+**Legal Considerations:**
+This tool queries public APIs and scrapes publicly accessible content. You're responsible for:
+- Complying with each platform's Terms of Service
+- Respecting rate limits
+- Not using this for commercial scraping at scale
+
+If you're worried about compliance, don't use this. It's for personal research, not enterprise deployment.
+
+---
+
+## Known Issues & Limitations
+
+**Rate Limiting:**
+- No circuit breakers or sophisticated backoff beyond basic retry logic
+- Parallel searches can burn through API quotas quickly
+- Stack Overflow: 300 req/day unauth, you'll hit this with heavy use
+- GitHub: 60 req/hour unauth, pagination limited to 100 items
+
+**Error Handling:**
+- Site HTML changes will break scrapers (happens periodically)
+- CAPTCHAs from aggressive querying will fail silently
+- LLM timeouts retry 3x then give up
+- Partial results returned when sources fail (by design)
+
+**Quality Scoring:**
+- Weights are somewhat arbitrary (25% source authority, 30% validation, etc.)
+- Not configurable without editing code
+- Doesn't account for context (old highly-voted answer vs recent edge case fix)
+
+**Setup:**
+- `initialize.bat` is Windows-only
+- No Docker, no `pyproject.toml`, no formal dependency management
+- Literally works on my machine, maybe not yours
+
+**Caching:**
+- Simple 24-hour TTL, no invalidation strategy
+- Stale results if libraries/APIs change
+- No distributed cache for multi-user scenarios
+
+If any of this is a dealbreaker, this tool isn't for you.
 
 ---
 
@@ -199,15 +331,31 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-## Contributing
+## Why This Exists
 
-Contributions welcome. Please ensure:
+Official documentation tells you how things *should* work. The community tells you:
+- Why it's actually broken
+- The undocumented hack that fixes it
+- Which approach people are using in production
 
-- Code follows existing style and patterns
-- New features include documentation updates
-- No breaking changes to existing APIs
-- Tests pass (when test suite is implemented)
+This tool automates the tab-hopping between Stack Overflow comments, GitHub issue workarounds, and Reddit "don't use X, use Y" threads that you're already doing manually.
+
+**What it's good at:**
+- Finding the real solution buried in Stack Overflow comments
+- Discovering recent GitHub issues about breaking changes
+- Aggregating "what are people actually using" discussions from Reddit/HN
+
+**What it's not:**
+- A replacement for reading docs
+- A guarantee of correctness
+- Enterprise-grade tooling
 
 ---
 
-Built for developers who ship code.
+## Contributing
+
+PRs welcome. No formal process—just keep it simple and don't break existing stuff.
+
+---
+
+Built for fun. Works on my machine. YMMV.
