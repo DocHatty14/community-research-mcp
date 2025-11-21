@@ -54,12 +54,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # Import streaming capabilities
 try:
     from streaming_capabilities import (
+        SOURCE_LABELS,
         SystemCapabilities,
+        classify_result,
         detect_all_capabilities,
         format_capabilities_report,
-        classify_result,
         summarize_content_shapes,
-        SOURCE_LABELS,
     )
     from streaming_search import (
         get_all_search_results_streaming,
@@ -72,8 +72,11 @@ except ImportError:
     print("Note: Streaming capabilities unavailable")
     SOURCE_LABELS = {}
 
-    def summarize_content_shapes(results_by_source: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    def summarize_content_shapes(
+        results_by_source: Dict[str, List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
         return {"per_source": {}, "totals": {}}
+
 
 # Import enhanced MCP utilities for production-grade reliability
 try:
@@ -707,7 +710,7 @@ async def search_stackoverflow(query: str, language: str) -> List[Dict[str, Any]
     try:
         # Map language to SO tags
         so_tag = SO_LANGUAGE_TAGS.get(language.lower(), language.lower())
-        
+
         url = "https://api.stackexchange.com/2.3/search/advanced"
         params = {
             "order": "desc",
@@ -720,27 +723,29 @@ async def search_stackoverflow(query: str, language: str) -> List[Dict[str, Any]
 
         async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
             response = await client.get(url, params=params)
-            
+
             # Handle rate limiting
             if response.status_code == 429:
                 logging.warning(f"SO API rate limited. Backoff required.")
                 await asyncio.sleep(2)  # Brief backoff
                 return []
-            
+
             response.raise_for_status()
             data = response.json()
-            
+
             # Check for SO API errors
             if "error_id" in data:
-                logging.warning(f"SO API error: {data.get('error_message', 'Unknown error')}")
+                logging.warning(
+                    f"SO API error: {data.get('error_message', 'Unknown error')}"
+                )
                 return []
-            
+
             # Extract results
             items = data.get("items", [])
             if not items:
                 logging.debug(f"SO: No results for query '{query}' with tag '{so_tag}'")
                 return []
-            
+
             results = []
             for item in items[:15]:  # Top 15 results
                 results.append(
@@ -752,10 +757,10 @@ async def search_stackoverflow(query: str, language: str) -> List[Dict[str, Any]
                         "snippet": item.get("body", "")[:1000],
                     }
                 )
-            
+
             logging.info(f"SO: Found {len(results)} results for '{query}'")
             return results
-            
+
     except httpx.TimeoutException:
         logging.warning(f"SO API timeout for query '{query}'")
         return []
@@ -1033,9 +1038,7 @@ async def aggregate_search_results(
             )
             return [], entry
 
-        cap = policy.get(
-            "max_results_expanded" if expanded_mode else "max_results", 15
-        )
+        cap = policy.get("max_results_expanded" if expanded_mode else "max_results", 15)
         start = time.time()
         error_msg = None
         used_fallback = False
@@ -1083,7 +1086,9 @@ async def aggregate_search_results(
 
     tasks = {
         "stackoverflow": asyncio.create_task(
-            run_source("stackoverflow", search_stackoverflow, language, normalized_query)
+            run_source(
+                "stackoverflow", search_stackoverflow, language, normalized_query
+            )
         ),
         "github": asyncio.create_task(
             run_source("github", search_github, language, normalized_query)
@@ -1230,9 +1235,13 @@ def compute_multi_factor_score(
         recency_score = max(0.0, min(1.0, 1.0 - (recency / 365.0)))
 
     overlap = normalized.get("overlap", 0.0)
-    community = min(1.0, (normalized.get("score_votes", 0) + normalized.get("comments", 0)) / 100.0)
+    community = min(
+        1.0, (normalized.get("score_votes", 0) + normalized.get("comments", 0)) / 100.0
+    )
     richness = 0.6 if normalized.get("has_code") else 0.3
-    corroboration_bonus = min(0.3, (corroboration - 1) * 0.1) if corroboration > 1 else 0.0
+    corroboration_bonus = (
+        min(0.3, (corroboration - 1) * 0.1) if corroboration > 1 else 0.0
+    )
 
     base = (
         (source_weight * 0.3)
@@ -1270,7 +1279,9 @@ def build_all_star_index(
     scored_items = []
     for n in normalized_items:
         diversity_penalty = max(0, domain_counts[n["domain"]] - 1) * 0.02
-        score = compute_multi_factor_score(n, counts[n["fingerprint"]], diversity_penalty)
+        score = compute_multi_factor_score(
+            n, counts[n["fingerprint"]], diversity_penalty
+        )
         scored_items.append(
             {
                 **n,
@@ -1299,7 +1310,7 @@ def build_all_star_index(
                 "score": i["all_star_score"],
                 "corroboration": i["corroboration"],
                 "verification_status": i["verification_status"],
-                "reason": f"{i['source']} credibility, overlap {int(i['overlap']*100)}%, "
+                "reason": f"{i['source']} credibility, overlap {int(i['overlap'] * 100)}%, "
                 f"corroboration x{i['corroboration']}, code={i['has_code']}",
             }
             for i in items[:3]
@@ -1329,6 +1340,7 @@ def build_all_star_index(
             "domains": len(domain_counts),
         },
     }
+
 
 # ============================================================================
 # LLM Synthesis
@@ -2820,7 +2832,11 @@ async def community_search(params: CommunitySearchInput) -> str:
                     lines.append("")
                     for i, finding in enumerate(findings, 1):
                         benefit = finding.get("benefit") or finding.get("solution", "")
-                        summary_line = benefit.split("\n")[0][:220] if isinstance(benefit, str) else "See details below."
+                        summary_line = (
+                            benefit.split("\n")[0][:220]
+                            if isinstance(benefit, str)
+                            else "See details below."
+                        )
                         lines.append(
                             f"- {i}. {finding.get('title', 'Recommendation')} — {summary_line} (Difficulty: {finding.get('difficulty', 'Unknown')}, Community Score: {finding.get('community_score', 'N/A')}/100)"
                         )
@@ -2878,7 +2894,11 @@ async def community_search(params: CommunitySearchInput) -> str:
                             for name, count in shapes.items()
                             if isinstance(count, int) and count > 0
                         ]
-                        shape_text = ", ".join(shape_parts) if shape_parts else "no text captured"
+                        shape_text = (
+                            ", ".join(shape_parts)
+                            if shape_parts
+                            else "no text captured"
+                        )
                         label = stats.get("label", SOURCE_LABELS.get(source, source))
                         lines.append(
                             f"- {label}: {stats.get('total', 0)} items ({shape_text})"
@@ -2889,6 +2909,19 @@ async def community_search(params: CommunitySearchInput) -> str:
                     )
                     lines.append("")
                     lines.append(f"**Total Results Found:** {total_results}")
+
+                # Add search metrics footer
+                lines.append("")
+                lines.append("---")
+                lines.append("")
+                lines.append("## Search Stats")
+                lines.append("")
+                sources_queried = [s for s in source_lists.keys() if source_lists[s]]
+                lines.append(
+                    f"- **Sources queried:** {len(sources_queried)} ({', '.join(SOURCE_LABELS.get(s, s) for s in sources_queried)})"
+                )
+                lines.append(f"- **Results found:** {total_results}")
+                lines.append(f"- **Cache:** miss")
 
                 # Add All-Star snapshot
                 if all_star_meta.get("top_overall"):
@@ -2907,7 +2940,11 @@ async def community_search(params: CommunitySearchInput) -> str:
                         lines.append(
                             f"- {entry['source']}: {entry['status']} ({entry['result_count']} results, {entry['duration_ms']}ms"
                             + (", fallback" if entry.get("used_fallback") else "")
-                            + (f", error={entry['error']}" if entry.get("error") else "")
+                            + (
+                                f", error={entry['error']}"
+                                if entry.get("error")
+                                else ""
+                            )
                             + ")"
                         )
 
@@ -4225,6 +4262,39 @@ async def get_performance_metrics() -> str:
         return report
     except Exception as e:
         return f"Error generating metrics report: {str(e)}"
+
+
+@mcp.tool(
+    name="clear_cache",
+    annotations={
+        "title": "Clear Search Cache",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def clear_cache() -> str:
+    """
+    Clear the local search cache.
+
+    This removes all cached search results, forcing fresh queries on next search.
+    Useful when you need up-to-date results or when cached data might be stale.
+
+    Returns:
+        str: Status message indicating whether cache was cleared
+    """
+    cache_file = Path(".community_research_cache.json")
+    try:
+        if cache_file.exists():
+            cache_file.unlink()
+            return (
+                "✓ Cache cleared successfully. Next searches will fetch fresh results."
+            )
+        else:
+            return "ℹ️ Cache was already empty."
+    except Exception as e:
+        return f"❌ Error clearing cache: {str(e)}"
 
 
 def validate_environment():

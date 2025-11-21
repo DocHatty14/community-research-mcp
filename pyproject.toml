@@ -1,6 +1,9 @@
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["community_research_mcp", "streaming_capabilities", "streaming_search", "enhanced_mcp_utilities"]
 
 [project]
 name = "community-research-mcp"
@@ -8,7 +11,7 @@ version = "0.1.0"
 description = "MCP server for community-driven developer research"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "DocHatty"}
 ]
@@ -16,7 +19,6 @@ keywords = ["mcp", "search", "research", "stackoverflow", "github", "community"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",

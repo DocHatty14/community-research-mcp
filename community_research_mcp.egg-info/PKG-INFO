@@ -1,3 +1,38 @@
+Metadata-Version: 2.4
+Name: community-research-mcp
+Version: 0.1.0
+Summary: MCP server for community-driven developer research
+Author: DocHatty
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/DocHatty/community-research-mcp
+Project-URL: Repository, https://github.com/DocHatty/community-research-mcp
+Project-URL: Issues, https://github.com/DocHatty/community-research-mcp/issues
+Keywords: mcp,search,research,stackoverflow,github,community
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: mcp>=1.2.0
+Requires-Dist: fastmcp>=0.1.0
+Requires-Dist: httpx>=0.28.1
+Requires-Dist: pydantic>=2.10.4
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: beautifulsoup4>=4.13.3
+Requires-Dist: google-genai>=1.19.0
+Requires-Dist: openai>=1.55.2
+Provides-Extra: reddit
+Requires-Dist: praw>=7.8.1; extra == "reddit"
+Requires-Dist: redditwarp>=1.3.0; extra == "reddit"
+Requires-Dist: dnspython>=2.7.0; extra == "reddit"
+Dynamic: license-file
+
 # Community Research MCP
 ![download](https://github.com/user-attachments/assets/cde51164-2f14-43d2-86be-b7e0d483d1c7)
 
