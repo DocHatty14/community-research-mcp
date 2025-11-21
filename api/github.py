@@ -1,4 +1,9 @@
-"""GitHub Issues/Discussions search API integration."""
+"""
+GitHub Issues and Discussions search.
+
+Searches GitHub's issue tracker API sorted by reactions
+to find the most relevant community discussions.
+"""
 
 import logging
 from typing import Any, Dict, List

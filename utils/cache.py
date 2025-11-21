@@ -1,4 +1,9 @@
-"""Caching utilities for Community Research MCP."""
+"""
+Caching system with disk persistence.
+
+Provides get/set/clear functions for caching search results
+with automatic expiration and disk persistence.
+"""
 
 import hashlib
 import json

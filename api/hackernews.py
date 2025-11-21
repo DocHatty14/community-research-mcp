@@ -1,4 +1,9 @@
-"""Hacker News search API integration."""
+"""
+Hacker News search via Algolia API.
+
+Filters for high-quality posts (>100 points) to find
+substantive technical discussions.
+"""
 
 import logging
 from typing import Any, Dict, List

@@ -1,4 +1,8 @@
-"""Configuration enums and constants for Community Research MCP."""
+"""
+Configuration enums for Community Research MCP.
+
+Defines analysis depth modes and output format options.
+"""
 
 from enum import Enum
 

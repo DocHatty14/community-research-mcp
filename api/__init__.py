@@ -1,4 +1,9 @@
-"""API integrations for community search sources."""
+"""
+External API integrations for community search sources.
+
+This module provides async functions for searching Stack Overflow,
+GitHub Issues, Hacker News, and other developer communities.
+"""
 
 from api.github import search_github
 from api.hackernews import search_hackernews

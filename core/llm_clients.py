@@ -1,4 +1,9 @@
-"""LLM API client functions for Community Research MCP."""
+"""
+LLM API client functions.
+
+Unified interface for calling Gemini, OpenAI, Anthropic,
+OpenRouter, and Perplexity APIs with JSON response parsing.
+"""
 
 import json
 from typing import Any, Dict

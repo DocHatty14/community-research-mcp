@@ -1,4 +1,9 @@
-"""Stack Overflow search API integration."""
+"""
+Stack Overflow search API integration.
+
+Searches Stack Exchange API with language tag mapping and
+proper rate limit handling.
+"""
 
 import asyncio
 import logging

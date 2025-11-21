@@ -1,4 +1,9 @@
-"""Model orchestration and selection logic."""
+"""
+Model orchestration and selection logic.
+
+Intelligently selects the best available LLM provider based on
+task type, complexity, and user preferences.
+"""
 
 import os
 from typing import List, Optional, Tuple

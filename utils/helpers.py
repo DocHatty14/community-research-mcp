@@ -1,4 +1,9 @@
-"""Helper utilities for Community Research MCP."""
+"""
+Helper utilities for data manipulation.
+
+Pure functions for normalizing queries and processing
+search result dictionaries.
+"""
 
 from typing import Any, Dict, List
 

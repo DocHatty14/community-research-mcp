@@ -1,4 +1,9 @@
-"""Rate limiting utilities for Community Research MCP."""
+"""
+Sliding window rate limiter.
+
+Prevents API abuse by tracking tool call frequency
+with a simple sliding window algorithm.
+"""
 
 import time
 from typing import Dict, List
