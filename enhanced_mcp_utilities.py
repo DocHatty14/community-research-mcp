@@ -44,6 +44,115 @@ class RetryStrategy(Enum):
     CONSTANT = "constant"  # 2s, 2s, 2s, 2s
 
 
+class CircuitState(Enum):
+    """Circuit breaker states"""
+
+    CLOSED = "closed"  # Normal operation
+    OPEN = "open"  # Failing, reject requests
+    HALF_OPEN = "half_open"  # Testing if recovered
+
+
+class CircuitBreaker:
+    """
+    Simple circuit breaker to prevent cascading failures from quota exhaustion.
+
+    When a source consistently fails (e.g., rate limit exhausted), the circuit
+    opens and stops sending requests for a cooldown period, allowing quotas to
+    reset without hammering the API.
+    """
+
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        success_threshold: int = 2,
+        timeout: float = 300.0,  # 5 minutes
+    ):
+        self.failure_threshold = failure_threshold
+        self.success_threshold = success_threshold
+        self.timeout = timeout
+
+        self.failure_count = 0
+        self.success_count = 0
+        self.state = CircuitState.CLOSED
+        self.opened_at = None
+
+    def call(self, func: Callable, *args, **kwargs):
+        """Execute function through circuit breaker"""
+
+        # Check if circuit should transition from OPEN to HALF_OPEN
+        if self.state == CircuitState.OPEN:
+            if time.time() - self.opened_at >= self.timeout:
+                self.state = CircuitState.HALF_OPEN
+                self.success_count = 0
+            else:
+                raise Exception(
+                    f"Circuit breaker OPEN, try again in {int(self.timeout - (time.time() - self.opened_at))}s"
+                )
+
+        try:
+            result = func(*args, **kwargs)
+            self._on_success()
+            return result
+        except Exception as e:
+            self._on_failure()
+            raise e
+
+    async def call_async(self, func: Callable, *args, **kwargs):
+        """Execute async function through circuit breaker"""
+
+        # Check if circuit should transition from OPEN to HALF_OPEN
+        if self.state == CircuitState.OPEN:
+            if time.time() - self.opened_at >= self.timeout:
+                self.state = CircuitState.HALF_OPEN
+                self.success_count = 0
+            else:
+                # Return empty instead of raising (graceful degradation)
+                return []
+
+        try:
+            result = await func(*args, **kwargs)
+            self._on_success()
+            return result
+        except Exception as e:
+            self._on_failure()
+            # Return empty instead of re-raising (graceful degradation)
+            return []
+
+    def _on_success(self):
+        """Record successful call"""
+        self.failure_count = 0
+
+        if self.state == CircuitState.HALF_OPEN:
+            self.success_count += 1
+            if self.success_count >= self.success_threshold:
+                self.state = CircuitState.CLOSED
+                self.success_count = 0
+
+    def _on_failure(self):
+        """Record failed call"""
+        self.failure_count += 1
+
+        if self.failure_count >= self.failure_threshold:
+            self.state = CircuitState.OPEN
+            self.opened_at = time.time()
+            self.failure_count = 0
+
+
+# Global circuit breakers per source
+_circuit_breakers: Dict[str, CircuitBreaker] = {}
+
+
+def get_circuit_breaker(source: str) -> CircuitBreaker:
+    """Get or create circuit breaker for a source"""
+    if source not in _circuit_breakers:
+        _circuit_breakers[source] = CircuitBreaker(
+            failure_threshold=5,  # Open after 5 failures
+            success_threshold=2,  # Close after 2 successes in HALF_OPEN
+            timeout=300.0,  # 5 minute cooldown
+        )
+    return _circuit_breakers[source]
+
+
 @dataclass
 class APIMetrics:
     """Track API call performance metrics"""

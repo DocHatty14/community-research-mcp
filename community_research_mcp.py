@@ -86,6 +86,7 @@ try:
         deduplicate_results,
         format_metrics_report,
         get_api_metrics,
+        get_circuit_breaker,
         get_performance_monitor,
         resilient_api_call,
     )
@@ -93,7 +94,7 @@ try:
     ENHANCED_UTILITIES_AVAILABLE = True
     # Initialize quality scorer
     _quality_scorer = QualityScorer()
-    print("Enhanced utilities active")
+    print("Enhanced utilities active (with circuit breakers)")
 except ImportError:
     ENHANCED_UTILITIES_AVAILABLE = False
     _quality_scorer = None
@@ -1045,10 +1046,14 @@ async def aggregate_search_results(
 
         try:
             if ENHANCED_UTILITIES_AVAILABLE:
+                # Use circuit breaker for each source
+                circuit_breaker = get_circuit_breaker(source)
                 if source in {"hackernews", "duckduckgo"}:
-                    raw = await resilient_api_call(func, q)
+                    raw = await circuit_breaker.call_async(resilient_api_call, func, q)
                 else:
-                    raw = await resilient_api_call(func, q, lang)
+                    raw = await circuit_breaker.call_async(
+                        resilient_api_call, func, q, lang
+                    )
             else:
                 if source in {"hackernews", "duckduckgo"}:
                     raw = await func(q)
@@ -3096,8 +3101,22 @@ class DuckDuckGoSearcher:
                 return []
 
             results = []
-            for i, result in enumerate(soup.select(".result")):
-                title_elem = result.select_one(".result__title")
+
+            # Try multiple selectors for robustness (HTML structure changes)
+            result_elements = (
+                soup.select(".result")
+                or soup.select("[data-testid='result']")
+                or soup.select("article")
+                or []
+            )
+
+            for i, result in enumerate(result_elements):
+                # Try multiple title selectors
+                title_elem = (
+                    result.select_one(".result__title")
+                    or result.select_one("h2")
+                    or result.select_one("h3")
+                )
                 if not title_elem:
                     continue
 
@@ -3116,7 +3135,12 @@ class DuckDuckGoSearcher:
                 if link.startswith("//duckduckgo.com/l/?uddg="):
                     link = urllib.parse.unquote(link.split("uddg=")[1].split("&")[0])
 
-                snippet_elem = result.select_one(".result__snippet")
+                # Try multiple snippet selectors
+                snippet_elem = (
+                    result.select_one(".result__snippet")
+                    or result.select_one("p")
+                    or result.select_one(".description")
+                )
                 snippet = snippet_elem.get_text(strip=True) if snippet_elem else ""
 
                 results.append(
