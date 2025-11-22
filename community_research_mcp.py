@@ -964,6 +964,8 @@ def normalize_item_for_scoring(
     title = item.get("title") or item.get("name") or "Untitled"
     fingerprint = hashlib.md5(f"{source}:{url}".encode("utf-8")).hexdigest()
     domain = _safe_domain(url)
+    if source == "duckduckgo" and not _is_preferred_domain(domain):
+        return None
     has_code = _snippet_has_code(snippet)
     recency_days = _estimate_recency_days(item)
     overlap = _token_overlap_score(f"{title} {snippet}", f"{language} {query}")
@@ -1121,30 +1123,87 @@ def _index_results_by_url(results: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return lookup
 
 
+def filter_results_by_domain(
+    results: Dict[str, Any], language: str, query: str
+) -> Dict[str, Any]:
+    """Drop low-signal domains (e.g., unrelated web results) before synthesis."""
+    key_terms = [t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) > 3][:6]
+    anchor_terms = [t for t in key_terms if t not in {"latest", "version", "removed", "guide", "fix", "solution", "rust"}][:3]
+    filtered: Dict[str, Any] = {}
+    for source, items in _result_only_sources(results).items():
+        kept: List[Dict[str, Any]] = []
+        for item in items:
+            norm = normalize_item_for_scoring(source, item, query, language)
+            if not norm:
+                continue
+            if not _is_preferred_domain(norm["domain"]):
+                continue
+            if norm["overlap"] < 0.6:
+                continue
+            text_blob = f"{norm.get('title','')} {norm.get('snippet','')}".lower()
+            if "wgpu" not in text_blob:
+                continue
+            if key_terms and not any(term in text_blob for term in key_terms):
+                continue
+            if anchor_terms and not any(term in text_blob for term in anchor_terms):
+                continue
+            kept.append(item)
+        filtered[source] = kept
+    filtered["_meta"] = results.get("_meta", {})
+    return filtered
+
+
+PREFERRED_DOMAINS = {
+    "stackoverflow.com",
+    "github.com",
+    "bevyengine.org",
+    "docs.rs",
+    "crates.io",
+    "users.rust-lang.org",
+    "reddit.com",
+}
+
+
+def _is_preferred_domain(domain: str) -> bool:
+    return any(domain.endswith(d) or d in domain for d in PREFERRED_DOMAINS)
+
+
 def select_top_evidence(
     results: Dict[str, Any],
     all_star_meta: Dict[str, Any],
+    query: str,
+    language: str,
     limit: int = 6,
 ) -> List[Dict[str, Any]]:
     """
     Build a concise evidence pack combining all-star scoring and raw metadata.
+    Filters out low-overlap or low-authority domains where possible.
     """
     lookup = _index_results_by_url(results)
     evidence: List[Dict[str, Any]] = []
 
-    for item in all_star_meta.get("top_overall", []):
-        url = item.get("url")
+    def _add_item(raw: Dict[str, Any], source: str, score: Optional[float], reason: str):
+        url = raw.get("url") or raw.get("link")
         if not url:
-            continue
-        raw = lookup.get(url, {})
+            return False
+        if any(ev["url"] == url for ev in evidence):
+            return False
+        norm = normalize_item_for_scoring(source, raw, query, language)
+        if not norm:
+            return False
+        if norm["overlap"] < 0.2:
+            return False
+        domain_ok = _is_preferred_domain(norm["domain"])
+        if not domain_ok:
+            return False
         evidence.append(
             {
-                "title": item.get("title") or raw.get("title") or "Untitled",
+                "title": raw.get("title") or raw.get("name") or "Untitled",
                 "url": url,
-                "source": item.get("source") or raw.get("source"),
-                "score": item.get("score"),
-                "corroboration": item.get("corroboration"),
-                "reason": item.get("reason"),
+                "source": source,
+                "score": score,
+                "corroboration": raw.get("corroboration", 1),
+                "reason": reason,
                 "snippet": raw.get("snippet") or raw.get("content"),
                 "votes": raw.get("score") or raw.get("points") or raw.get("stars"),
                 "comments": raw.get("comments") or raw.get("answer_count"),
@@ -1153,48 +1212,45 @@ def select_top_evidence(
                 or raw.get("updated_at"),
             }
         )
-        if len(evidence) >= limit:
-            break
+        return True
 
-    if len(evidence) >= limit:
-        return evidence
-
-    # Backfill with per-source top items using simple vote/recency heuristics
-    for source, items in _result_only_sources(results).items():
-        sorted_items = sorted(
-            items,
-            key=lambda x: (
-                x.get("score", 0)
-                or x.get("points", 0)
-                or x.get("comments", 0)
-                or 0
-            ),
-            reverse=True,
-        )
-        for raw in sorted_items:
-            url = raw.get("url") or raw.get("link")
-            if not url or any(ev["url"] == url for ev in evidence):
+    def pass_with_preference(require_preferred: bool) -> None:
+        for item in all_star_meta.get("top_overall", []):
+            url = item.get("url")
+            if not url:
                 continue
-            evidence.append(
-                {
-                    "title": raw.get("title") or raw.get("name") or "Untitled",
-                    "url": url,
-                    "source": source,
-                    "score": raw.get("score") or raw.get("points"),
-                    "corroboration": 1,
-                    "reason": "Top per-source result (votes/recency)",
-                    "snippet": raw.get("snippet") or raw.get("content"),
-                    "votes": raw.get("score") or raw.get("points"),
-                    "comments": raw.get("comments") or raw.get("answer_count"),
-                    "created_at": raw.get("created_at")
-                    or raw.get("creation_date")
-                    or raw.get("updated_at"),
-                }
-            )
+            raw = lookup.get(url, {})
+            norm = normalize_item_for_scoring(item.get("source", raw.get("source", "unknown")), raw or item, query, language)
+            if not norm:
+                continue
+            if require_preferred and not _is_preferred_domain(norm["domain"]):
+                continue
+            _add_item(raw or item, item.get("source", raw.get("source", "unknown")), item.get("score"), item.get("reason", "all-star"))
             if len(evidence) >= limit:
-                break
-        if len(evidence) >= limit:
-            break
+                return
+
+        for source, items in _result_only_sources(results).items():
+            sorted_items = sorted(
+                items,
+                key=lambda x: (
+                    x.get("score", 0)
+                    or x.get("points", 0)
+                    or x.get("comments", 0)
+                    or 0
+                ),
+                reverse=True,
+            )
+            for raw in sorted_items:
+                norm = normalize_item_for_scoring(source, raw, query, language)
+                if not norm:
+                    continue
+                if require_preferred and not _is_preferred_domain(norm["domain"]):
+                    continue
+                if _add_item(raw, source, raw.get("score") or raw.get("points"), "Top per-source (votes/recency)"):
+                    if len(evidence) >= limit:
+                        return
+
+    pass_with_preference(require_preferred=True)
 
     return evidence[:limit]
 
@@ -1248,6 +1304,9 @@ Raw Search Results:
 
 Write STRICT JSON only (no markdown). Keep it concise and executable.
 Limit to 3-5 findings. Prefer evidence with votes/stars and recency.
+If evidence is weak (<2 solid links) state it in assumptions and keep solutions conservative.
+Do NOT invent tools, APIs, or generic MCP fallbacks; stay inside the provided evidence.
+If unsure, say "evidence weak" instead of guessing.
 
 JSON schema:
 {{
@@ -1321,7 +1380,17 @@ def normalize_masterclass_payload(
     enrichment = enrichment or {}
     evidence_map = {ev["url"]: ev for ev in evidence if ev.get("url")}
 
-    findings = synthesis.get("findings") or []
+    raw_findings = synthesis.get("findings") or []
+    findings: List[Dict[str, Any]] = []
+    for f in raw_findings:
+        findings.append(f)
+    findings = [
+        f
+        for f in findings
+        if f.get("url")
+        and _is_preferred_domain(_safe_domain(str(f.get("url", ""))))
+    ]
+
     if not findings and evidence:
         for ev in evidence[:3]:
             quote = (ev.get("snippet") or "").strip()
@@ -1377,9 +1446,16 @@ def normalize_masterclass_payload(
                     "why": f.get("issue", "Improve reliability"),
                 }
             )
+    if len(evidence) < 2 and not recommended_path:
+        recommended_path.append(
+            {
+                "step": "Gather more evidence or rerun with a narrower query",
+                "why": "Evidence is weak; avoid acting on uncorroborated advice.",
+            }
+        )
 
     quick_apply = synthesis.get("quick_apply") or {}
-    if not quick_apply and findings:
+    if not quick_apply and findings and len(evidence) >= 2:
         first_code = next((f.get("code") for f in findings if f.get("code")), "")
         if first_code:
             quick_apply = {"language": language, "code": first_code, "commands": []}
@@ -2538,19 +2614,32 @@ async def community_search(params: CommunitySearchInput) -> str:
                 use_fixtures=params.use_fixtures,
             )
 
-            source_lists = _result_only_sources(search_results)
-            total_results = total_result_count(search_results)
-            all_star_meta = search_results.get("_meta", {}).get("all_star", {})
+            filtered_results = filter_results_by_domain(
+                search_results, params.language, params.topic
+            )
+
+            source_lists = _result_only_sources(filtered_results)
+            total_results = total_result_count(filtered_results)
+            all_star_meta = build_all_star_index(
+                filtered_results, search_query, params.language
+            )
             audit_log = search_results.get("_meta", {}).get("audit_log", [])
             shape_stats = summarize_content_shapes(source_lists)
-            top_evidence = select_top_evidence(search_results, all_star_meta)
+            top_evidence = select_top_evidence(
+                filtered_results, all_star_meta, search_query, params.language
+            )
 
-            if total_results == 0:
+            preferred_present = any(
+                source_lists.get(s) for s in ["stackoverflow", "github", "duckduckgo"]
+            )
+
+            if total_results < 2 or not preferred_present:
                 result = json.dumps(
                     {
-                        "error": f'No results found for "{params.topic}" in {params.language}. Try expanded queries.',
+                        "error": f'Not enough relevant results for "{params.topic}" in {params.language}. Try expanded queries or add version/error text.',
                         "expanded_queries": enrichment.get("expanded_queries", []),
                         "findings": [],
+                        "assumptions": enrichment.get("assumptions", []),
                     },
                     indent=2,
                 )
