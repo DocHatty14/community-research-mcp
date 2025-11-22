@@ -418,6 +418,150 @@ def validate_topic_specificity(topic: str) -> tuple[bool, str]:
     return True, ""
 
 
+# ============================================================================
+# Query Enrichment & Quality Guardrails
+# ============================================================================
+
+
+VERSION_PATTERN = re.compile(r"\\b\\d+\\.\\d+(?:\\.\\d+)?\\b")
+
+
+def _extract_versions(text: str) -> List[str]:
+    """Return unique version strings found in free text."""
+    return sorted({m.group(0) for m in VERSION_PATTERN.finditer(text)})
+
+
+def _build_version_tokens(versions: List[str]) -> List[str]:
+    """Create lightweight range/filter tokens for version-aware searches."""
+    tokens: List[str] = []
+    for ver in versions:
+        tokens.extend([f"v{ver}", f"before:{ver}", f"after:{ver}", f"since {ver}"])
+        parts = ver.split(".")
+        if len(parts) >= 2:
+            major_minor = ".".join(parts[:2])
+            tokens.append(f"{major_minor}.x")
+    return tokens
+
+
+def enrich_query(language: str, topic: str, goal: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Build an enriched search query with synonyms, version hints, and explicit intent.
+
+    Returns:
+        {
+            "enriched_query": "...",
+            "expanded_queries": [...],
+            "notes": [...],
+            "assumptions": [...],
+            "versions": [...]
+        }
+    """
+    base = f"{language} {topic}".strip()
+    notes: List[str] = []
+    assumptions: List[str] = []
+
+    lower_topic = topic.lower()
+    versions = _extract_versions(topic)
+
+    # Synonyms and intent amplifiers
+    amplifiers: List[str] = []
+    if "remove" in lower_topic or "removed" in lower_topic:
+        amplifiers.extend(["deprecated", "breaking change", "migration", "upgrade guide"])
+    if "error" in lower_topic or "exception" in lower_topic:
+        amplifiers.extend(["stack trace", "fix", "workaround"])
+    if "compile" in lower_topic:
+        amplifiers.extend(["build failure", "linker error"])
+
+    if goal:
+        amplifiers.append(goal)
+    if versions:
+        notes.append(f"Detected versions: {', '.join(versions)}")
+        amplifiers.extend(_build_version_tokens(versions))
+
+    amplifiers.append("solution")
+    amplifiers.append("code example")
+
+    # Ensure uniqueness and reasonable length
+    seen = set()
+    filtered_amplifiers: List[str] = []
+    for token in amplifiers:
+        token = token.strip()
+        if not token or token.lower() in seen:
+            continue
+        seen.add(token.lower())
+        filtered_amplifiers.append(token)
+
+    enriched_query = " ".join([base] + filtered_amplifiers).strip()
+
+    # Construct expanded variations for logging or future iterations
+    expanded_queries = [
+        base,
+        f"{base} migration guide",
+        f"{base} breaking change",
+        f"{base} fix",
+    ]
+    if goal:
+        expanded_queries.append(f"{base} {goal}")
+    if versions:
+        expanded_queries.append(f"{base} {versions[0]} upgrade")
+
+    if not goal:
+        assumptions.append("Goal not provided; assuming intent is to fix/upgrade.")
+
+    return {
+        "enriched_query": enriched_query,
+        "expanded_queries": expanded_queries,
+        "notes": notes,
+        "assumptions": assumptions,
+        "versions": versions,
+    }
+
+
+def detect_conflicts_from_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """
+    Lightweight conflict detector that spots divergent recommendations.
+    """
+    conflicts: List[Dict[str, str]] = []
+    if not findings:
+        return conflicts
+
+    content_blobs = []
+    for f in findings:
+        blob = " ".join(
+            [
+                str(f.get("title", "")),
+                str(f.get("problem", "")),
+                str(f.get("solution", "")),
+                str(f.get("gotchas", "")),
+            ]
+        ).lower()
+        content_blobs.append(blob)
+
+    mentions_upgrade = any("upgrade" in b or "update" in b for b in content_blobs)
+    mentions_pin = any("downgrade" in b or "pin" in b or "lock" in b for b in content_blobs)
+    if mentions_upgrade and mentions_pin:
+        conflicts.append(
+            {
+                "description": "Conflicting guidance: upgrade vs. pin/downgrade.",
+                "impact": "Choose one path to avoid dependency churn; prefer upgrade if ecosystem supports it.",
+                "recommended_action": "Validate plugin/library compatibility before choosing upgrade or pin strategy.",
+            }
+        )
+
+    # Detect divergent version recommendations
+    versions_seen = [_extract_versions(" ".join([f.get("problem", ""), f.get("solution", "")])) for f in findings]
+    flat_versions = {v for sub in versions_seen for v in sub}
+    if len(flat_versions) >= 2:
+        conflicts.append(
+            {
+                "description": f"Multiple version targets detected: {', '.join(sorted(flat_versions))}.",
+                "impact": "Following mixed version advice can cause inconsistent builds.",
+                "recommended_action": "Align all deps to a single target version before rollout.",
+            }
+        )
+
+    return conflicts
+
 def _result_only_sources(results: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     """Filter out non-list metadata keys from aggregated results."""
     return {k: v for k, v in results.items() if isinstance(v, list)}
@@ -965,9 +1109,100 @@ def build_all_star_index(
     }
 
 
+def _index_results_by_url(results: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Create a quick lookup for search items by URL."""
+    lookup: Dict[str, Dict[str, Any]] = {}
+    for source, items in _result_only_sources(results).items():
+        for item in items:
+            url = item.get("url") or item.get("link")
+            if not url:
+                continue
+            lookup[url] = {**item, "source": source}
+    return lookup
+
+
+def select_top_evidence(
+    results: Dict[str, Any],
+    all_star_meta: Dict[str, Any],
+    limit: int = 6,
+) -> List[Dict[str, Any]]:
+    """
+    Build a concise evidence pack combining all-star scoring and raw metadata.
+    """
+    lookup = _index_results_by_url(results)
+    evidence: List[Dict[str, Any]] = []
+
+    for item in all_star_meta.get("top_overall", []):
+        url = item.get("url")
+        if not url:
+            continue
+        raw = lookup.get(url, {})
+        evidence.append(
+            {
+                "title": item.get("title") or raw.get("title") or "Untitled",
+                "url": url,
+                "source": item.get("source") or raw.get("source"),
+                "score": item.get("score"),
+                "corroboration": item.get("corroboration"),
+                "reason": item.get("reason"),
+                "snippet": raw.get("snippet") or raw.get("content"),
+                "votes": raw.get("score") or raw.get("points") or raw.get("stars"),
+                "comments": raw.get("comments") or raw.get("answer_count"),
+                "created_at": raw.get("created_at")
+                or raw.get("creation_date")
+                or raw.get("updated_at"),
+            }
+        )
+        if len(evidence) >= limit:
+            break
+
+    if len(evidence) >= limit:
+        return evidence
+
+    # Backfill with per-source top items using simple vote/recency heuristics
+    for source, items in _result_only_sources(results).items():
+        sorted_items = sorted(
+            items,
+            key=lambda x: (
+                x.get("score", 0)
+                or x.get("points", 0)
+                or x.get("comments", 0)
+                or 0
+            ),
+            reverse=True,
+        )
+        for raw in sorted_items:
+            url = raw.get("url") or raw.get("link")
+            if not url or any(ev["url"] == url for ev in evidence):
+                continue
+            evidence.append(
+                {
+                    "title": raw.get("title") or raw.get("name") or "Untitled",
+                    "url": url,
+                    "source": source,
+                    "score": raw.get("score") or raw.get("points"),
+                    "corroboration": 1,
+                    "reason": "Top per-source result (votes/recency)",
+                    "snippet": raw.get("snippet") or raw.get("content"),
+                    "votes": raw.get("score") or raw.get("points"),
+                    "comments": raw.get("comments") or raw.get("answer_count"),
+                    "created_at": raw.get("created_at")
+                    or raw.get("creation_date")
+                    or raw.get("updated_at"),
+                }
+            )
+            if len(evidence) >= limit:
+                break
+        if len(evidence) >= limit:
+            break
+
+    return evidence[:limit]
+
+
 # ============================================================================
 # LLM Synthesis
 # ============================================================================
+
 
 
 async def synthesize_with_llm(
@@ -976,10 +1211,9 @@ async def synthesize_with_llm(
     language: str,
     goal: Optional[str],
     current_setup: Optional[str],
+    context_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    Use LLM to synthesize search results into actionable recommendations.
-    """
+    """Use LLM to synthesize search results into actionable recommendations."""
     provider_info = get_available_llm_provider()
     if not provider_info:
         return {
@@ -989,68 +1223,72 @@ async def synthesize_with_llm(
 
     provider, api_key = provider_info
 
-    # Build prompt
-    prompt = f"""You are a technical research assistant analyzing community solutions.
+    all_star = (context_meta or {}).get("all_star", {})
+    top_evidence = (context_meta or {}).get("top_evidence", [])
+    enrichment = (context_meta or {}).get("enrichment", {})
+
+    prompt = f"""You are a senior engineer distilling community research into an actionable plan.
 
 Query: {query}
 Language: {language}
-"""
+Goal: {goal or "not provided"}
+Current Setup: {current_setup or "not provided"}
 
-    if goal:
-        prompt += f"Goal: {goal}\n"
-    if current_setup:
-        prompt += f"Current Setup: {current_setup}\n"
+Top Evidence (pre-ranked):
+{json.dumps(top_evidence, indent=2)}
 
-    prompt += f"""
-Search Results:
+All-Star Summary:
+{json.dumps(all_star, indent=2)}
+
+Enrichment Notes:
+{json.dumps(enrichment, indent=2)}
+
+Raw Search Results:
 {json.dumps(search_results, indent=2)}
 
-Analyze these search results and provide a ROBUST, VERBOSE, and COMPREHENSIVE set of recommendations.
+Write STRICT JSON only (no markdown). Keep it concise and executable.
+Limit to 3-5 findings. Prefer evidence with votes/stars and recency.
 
-**STEP 1: Clustering & Analysis**
-Group the search results into distinct approaches or themes. Discard irrelevant results.
-Focus on the most promising clusters.
-
-**STEP 2: Detailed Recommendations**
-For each major cluster/approach, provide a detailed recommendation.
-
-Provide thorough, comprehensive recommendations with deep technical insight.
-
-For each recommendation:
-
-1. **Problem**: What specific problem does this solve? Quote real users if possible.
-2. **Solution**: Step-by-step implementation with working code examples. Explain the code in detail.
-3. **Benefit**: Measurable improvements (performance, simplicity, reliability).
-4. **Evidence**: GitHub stars, Stack Overflow votes, community adoption.
-5. **Difficulty**: Easy/Medium/Hard.
-6. **Gotchas**: Edge cases, warnings, and potential pitfalls.
-
-Return only valid JSON with this exact structure (no markdown formatting, no backticks):
+JSON schema:
 {{
-  "clusters": [
+  "findings": [
     {{
-      "name": "Cluster Name (e.g., 'Native Asyncio Approach')",
-      "description": "High-level summary of this approach",
-      "findings": [
-        {{
-          "title": "Descriptive title",
-          "problem": "Detailed problem description",
-          "solution": "Detailed solution with extensive code",
-          "benefit": "Measurable benefits",
-          "evidence": "Community validation",
-          "difficulty": "Easy|Medium|Hard",
-          "community_score": 85,
-          "gotchas": "Important warnings"
-        }}
-      ]
+      "title": "short label for the recommendation",
+      "source": "Stack Overflow|GitHub|Reddit|Hacker News|Web",
+      "url": "https://...",
+      "score": 0-100,
+      "date": "YYYY-MM-DD or unknown",
+      "votes": 0,
+      "issue": "1-2 lines describing the problem or breaking change",
+      "solution": "2-4 lines with concrete steps; include API names/settings",
+      "code": "minimal runnable snippet or empty string",
+      "evidence": [
+        {{"url": "https://...", "quote": "short quote from source", "signal": "42 votes on Stack Overflow"}}
+      ],
+      "gotchas": "warnings/edge cases",
+      "difficulty": "Easy|Medium|Hard"
     }}
   ],
-  "synthesis_summary": "Overall summary of the landscape"
+  "conflicts": [
+    {{"description": "conflict between recommendations", "impact": "risk/side-effect", "recommended_action": "how to choose"}}
+  ],
+  "recommended_path": [
+    {{"step": "action to take", "why": "reason/ordering"}}
+  ],
+  "quick_apply": {{"language": "{language}", "code": "minimal code block", "commands": ["optional shell commands"]}},
+  "verification": ["tests or commands to prove the fix"],
+  "assumptions": ["any assumption you made"],
+  "synthesis_summary": "1-2 line final take"
 }}
+
+Rules:
+- Use only the provided sources for evidence; no new URLs.
+- Prefer evidence with quotes and community signals (votes/stars/comments).
+- Keep code minimal and focused on the migration/fix.
+- If evidence is weak (<2 solid sources), note it in assumptions.
 """
 
     try:
-        # Call appropriate LLM
         if provider == "gemini":
             return await call_gemini(api_key, prompt)
         elif provider == "openai":
@@ -1066,6 +1304,221 @@ Return only valid JSON with this exact structure (no markdown formatting, no bac
 
     except Exception as e:
         return {"error": f"LLM synthesis failed: {str(e)}", "findings": []}
+
+
+# ============================================================================
+# Masterclass Rendering Helpers
+# ============================================================================
+
+
+def normalize_masterclass_payload(
+    synthesis: Dict[str, Any],
+    evidence: List[Dict[str, Any]],
+    language: str,
+    enrichment: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Ensure synthesis output has all fields and evidence attached."""
+    enrichment = enrichment or {}
+    evidence_map = {ev["url"]: ev for ev in evidence if ev.get("url")}
+
+    findings = synthesis.get("findings") or []
+    if not findings and evidence:
+        for ev in evidence[:3]:
+            quote = (ev.get("snippet") or "").strip()
+            findings.append(
+                {
+                    "title": ev.get("title", "Recommendation"),
+                    "source": ev.get("source", "community"),
+                    "url": ev.get("url"),
+                    "score": ev.get("score", 0) or 0,
+                    "votes": ev.get("votes"),
+                    "issue": (quote[:180] or "See linked source for details."),
+                    "solution": "Apply the referenced fix/migration from the linked source.",
+                    "code": "",
+                    "evidence": [
+                        {
+                            "url": ev.get("url"),
+                            "quote": quote[:200] or "Evidence available in source.",
+                            "signal": ev.get("reason") or "community source",
+                        }
+                    ],
+                    "gotchas": "",
+                    "difficulty": "Unknown",
+                }
+            )
+
+    for f in findings:
+        url = f.get("url")
+        ev = evidence_map.get(url)
+        if ev and not f.get("evidence"):
+            quote = (ev.get("snippet") or "").strip()
+            f["evidence"] = [
+                {
+                    "url": ev.get("url"),
+                    "quote": quote[:200] or "Evidence available in source.",
+                    "signal": ev.get("reason") or "community source",
+                }
+            ]
+        f.setdefault("issue", f.get("problem", "Problem not captured."))
+        f.setdefault("solution", f.get("benefit", "Solution not captured."))
+        f.setdefault("source", ev.get("source") if ev else f.get("source", "community"))
+        f.setdefault("score", f.get("community_score", 0) or 0)
+        f.setdefault("votes", f.get("community_score"))
+        f.setdefault("difficulty", f.get("difficulty", "Unknown"))
+        if not f.get("evidence") and url:
+            f["evidence"] = [{"url": url, "quote": "See linked source.", "signal": "source link"}]
+
+    recommended_path = synthesis.get("recommended_path") or []
+    if not recommended_path and findings:
+        for i, f in enumerate(findings[:3], 1):
+            recommended_path.append(
+                {
+                    "step": f"Apply recommendation #{i}: {f.get('title', 'unnamed')}",
+                    "why": f.get("issue", "Improve reliability"),
+                }
+            )
+
+    quick_apply = synthesis.get("quick_apply") or {}
+    if not quick_apply and findings:
+        first_code = next((f.get("code") for f in findings if f.get("code")), "")
+        if first_code:
+            quick_apply = {"language": language, "code": first_code, "commands": []}
+
+    verification = synthesis.get("verification") or [
+        f"Rebuild/retest the {language} project after applying changes."
+    ]
+
+    assumptions = synthesis.get("assumptions") or []
+    assumptions.extend(enrichment.get("assumptions", []))
+    if len(evidence) < 2:
+        assumptions.append("Evidence is weak (fewer than 2 strong sources found).")
+
+    conflicts = synthesis.get("conflicts") or []
+
+    return {
+        "findings": findings,
+        "conflicts": conflicts,
+        "recommended_path": recommended_path,
+        "quick_apply": quick_apply,
+        "verification": verification,
+        "assumptions": assumptions,
+        "synthesis_summary": synthesis.get("synthesis_summary", ""),
+    }
+
+
+def render_masterclass_markdown(
+    topic: str,
+    language: str,
+    goal: Optional[str],
+    current_setup: Optional[str],
+    payload: Dict[str, Any],
+    conflicts_auto: List[Dict[str, str]],
+    search_meta: Dict[str, Any],
+) -> str:
+    """Render final markdown using the masterclass template."""
+    findings = payload.get("findings", [])
+    conflicts = payload.get("conflicts", []) + conflicts_auto
+    recommended_path = payload.get("recommended_path", [])
+    quick_apply = payload.get("quick_apply") or {}
+    verification = payload.get("verification") or []
+    assumptions = payload.get("assumptions") or []
+
+    lines: List[str] = []
+    lines.append(f"# Community Research: {topic}")
+    lines.append(f"- Goal: {goal or 'Not provided'}")
+    context_bits = [language]
+    if current_setup:
+        context_bits.append(current_setup)
+    lines.append(f"- Context: {', '.join(context_bits)}")
+    lines.append("")
+
+    lines.append("## Findings (ranked)")
+    if not findings:
+        lines.append("- No findings available; broaden the query or add goal/context.")
+    else:
+        for idx, f in enumerate(findings, 1):
+            source_label = f.get("source", "Source")
+            score = f.get("score", "N/A")
+            date = f.get("date", "unknown")
+            votes = f.get("votes") or f.get("community_score") or "n/a"
+            lines.append(
+                f"{idx}) {source_label} (Score: {score}, Date: {date}, Votes/Stars: {votes})"
+            )
+            lines.append(f"   - Issue: {f.get('issue', 'Not captured.')}")
+            lines.append(f"   - Solution: {f.get('solution', 'Not captured.')}")
+            evidence_list = f.get("evidence") or []
+            if evidence_list:
+                ev = evidence_list[0]
+                quote = str(ev.get("quote", "")).replace("\n", " ").strip()
+                lines.append(
+                    f"   - Evidence: {ev.get('url', '')} - \"{quote[:200] or 'See source'}\""
+                )
+            elif f.get("url"):
+                lines.append(f"   - Evidence: {f.get('url')}")
+            code_block = f.get("code")
+            if code_block:
+                code_lang = language.lower()
+                lines.append("")
+                lines.append(f"```{code_lang}\n{code_block}\n```")
+                lines.append("")
+    lines.append("")
+
+    lines.append("## Conflicts & Edge Cases")
+    if conflicts:
+        for c in conflicts:
+            lines.append(
+                f"- {c.get('description', 'Conflict')} - {c.get('recommended_action', 'Resolve carefully.')}"
+            )
+    else:
+        lines.append("- None detected; still validate against your stack.")
+    lines.append("")
+
+    lines.append("## Recommended Path")
+    if recommended_path:
+        for i, step in enumerate(recommended_path, 1):
+            lines.append(f"{i}. {step.get('step', 'Step')} - {step.get('why', '')}")
+    else:
+        lines.append("- Apply the top finding and rerun verification.")
+    lines.append("")
+
+    lines.append("## Quick-apply Code/Commands")
+    code = quick_apply.get("code")
+    if code:
+        code_lang = (quick_apply.get("language") or language).lower()
+        lines.append(f"```{code_lang}\n{code}\n```")
+    commands = quick_apply.get("commands") or []
+    for cmd in commands:
+        lines.append(f"- {cmd}")
+    if not code and not commands:
+        lines.append("- Not available from sources.")
+    lines.append("")
+
+    lines.append("## Verification")
+    for check in verification:
+        lines.append(f"- {check}")
+    if not verification:
+        lines.append("- Add tests/commands to validate changes.")
+    lines.append("")
+
+    if assumptions:
+        lines.append("## Assumptions")
+        for a in assumptions:
+            lines.append(f"- {a}")
+        lines.append("")
+
+    lines.append("## Search Stats")
+    lines.append(
+        f"- Sources queried: {search_meta.get('source_count', 0)} ({', '.join(search_meta.get('sources', []))})"
+    )
+    lines.append(f"- Results found: {search_meta.get('total_results', 0)}")
+    lines.append(f"- Enriched query: {search_meta.get('enriched_query', 'n/a')}")
+    lines.append(
+        f"- Expanded queries (for follow-up): {', '.join(search_meta.get('expanded_queries', [])[:3])}"
+    )
+    if search_meta.get("evidence_weak"):
+        lines.append("- Evidence: weak (fewer than 2 strong sources).")
+
+    return "\n".join(lines)
 
 
 # ============================================================================
@@ -2024,6 +2477,7 @@ async def get_server_context() -> str:
     return json.dumps(context, indent=2)
 
 
+
 @mcp.tool(
     name="community_search",
     annotations={
@@ -2038,56 +2492,17 @@ async def community_search(params: CommunitySearchInput) -> str:
     """
     Search Stack Overflow, Reddit, GitHub, and forums for real solutions.
 
-    This tool searches multiple community sources in parallel, aggregates results,
-    and uses an LLM to synthesize actionable recommendations with working code,
-    measurable benefits, and community validation.
-
-    Args:
-        params (CommunitySearchInput): Validated search parameters containing:
-            - language (str): Programming language (e.g., "Python", "JavaScript")
-            - topic (str): Specific, detailed topic (NOT vague like "settings")
-            - goal (Optional[str]): What you want to achieve
-            - current_setup (Optional[str]): Your tech stack (highly recommended)
-            - response_format (ResponseFormat): "markdown" (default) or "json"
-
-    Returns:
-        str: Formatted recommendations with:
-            - Problem descriptions with real user quotes
-            - Step-by-step solutions with working code
-            - Benefits with measurable improvements
-            - Evidence (GitHub stars, SO votes, blog mentions)
-            - Difficulty ratings (Easy/Medium/Hard)
-            - Community scores and adoption metrics
-            - Gotchas and edge cases from real users
-
-    Examples:
-        GOOD queries:
-        - language="Python", topic="FastAPI background task queue with Redis and Celery"
-        - language="JavaScript", topic="React custom hooks for form validation with Yup"
-        - language="Rust", topic="async/await patterns for HTTP clients with tokio"
-
-        BAD queries (will be rejected):
-        - language="Python", topic="settings"  # Too vague
-        - language="JavaScript", topic="performance"  # Too vague
-        - language="Go", topic="how to"  # Too vague
-
-    Error Handling:
-        - Validates query specificity (rejects vague queries with helpful suggestions)
-        - Returns helpful error messages if no LLM provider configured
-        - Caches results for 1 hour to reduce API calls
-        - Rate limited to 10 requests per minute
-        - Auto-retries failed searches up to 3 times
+    Returns evidence-backed, templated output with findings, conflicts, next steps,
+    quick-apply code, and verification guidance.
     """
-    # Check rate limit
     if not check_rate_limit("community_search"):
         return json.dumps(
             {
-                "error": "Rate limit exceeded. Maximum 10 requests per minute. Please wait and try again."
+                "error": "Rate limit exceeded. Maximum 10 requests per minute. Please wait and try again.",
             },
             indent=2,
         )
 
-    # Check cache
     cache_key = get_cache_key(
         "community_search",
         language=params.language,
@@ -2097,20 +2512,25 @@ async def community_search(params: CommunitySearchInput) -> str:
         expanded_mode=params.expanded_mode,
         use_fixtures=params.use_fixtures,
     )
-
     cached_result = get_cached_result(cache_key)
     if cached_result:
         return cached_result
 
-    # Build search query
-    search_query = f"{params.language} {params.topic}"
-    if params.goal:
-        search_query += f" {params.goal}"
+    valid, validation_msg = validate_topic_specificity(params.topic)
+    if not valid:
+        return json.dumps(
+            {
+                "error": validation_msg,
+                "suggestions": ["Add concrete tech/library names", "Include version numbers if relevant", "State the exact error or change you hit"],
+            },
+            indent=2,
+        )
 
-    # Execute search with retry logic
+    enrichment = enrich_query(params.language, params.topic, params.goal)
+    search_query = enrichment.get("enriched_query") or f"{params.language} {params.topic}"
+
     for attempt in range(MAX_RETRIES):
         try:
-            # Search all sources in parallel
             search_results = await aggregate_search_results(
                 search_query,
                 params.language,
@@ -2123,11 +2543,13 @@ async def community_search(params: CommunitySearchInput) -> str:
             all_star_meta = search_results.get("_meta", {}).get("all_star", {})
             audit_log = search_results.get("_meta", {}).get("audit_log", [])
             shape_stats = summarize_content_shapes(source_lists)
+            top_evidence = select_top_evidence(search_results, all_star_meta)
 
             if total_results == 0:
                 result = json.dumps(
                     {
-                        "error": f'No results found for "{params.topic}" in {params.language}. Try different search terms or a more common topic.',
+                        "error": f'No results found for "{params.topic}" in {params.language}. Try expanded queries.',
+                        "expanded_queries": enrichment.get("expanded_queries", []),
                         "findings": [],
                     },
                     indent=2,
@@ -2135,16 +2557,21 @@ async def community_search(params: CommunitySearchInput) -> str:
                 set_cached_result(cache_key, result)
                 return result
 
-            # Synthesize with LLM
+            context_meta = {
+                "all_star": all_star_meta,
+                "top_evidence": top_evidence,
+                "enrichment": enrichment,
+            }
+
             synthesis = await synthesize_with_llm(
                 source_lists,
                 params.topic,
                 params.language,
                 params.goal,
                 params.current_setup,
+                context_meta=context_meta,
             )
 
-            # Add quality scores if enhanced utilities available
             if (
                 ENHANCED_UTILITIES_AVAILABLE
                 and _quality_scorer
@@ -2154,172 +2581,64 @@ async def community_search(params: CommunitySearchInput) -> str:
                     synthesis["findings"]
                 )
 
-            # Format response
-            if params.response_format == ResponseFormat.MARKDOWN:
-                lines = [
-                    f"# {params.topic}",
-                    f"**Direct Answer:** {synthesis.get('synthesis_summary', 'No synthesis available.')}",
-                    "",
-                    f"**Language:** {params.language}",
-                    "",
-                ]
-
-                if "error" in synthesis:
-                    lines.append(f"**Error:** {synthesis['error']}")
-                    lines.append("")
-
-                findings = synthesis.get("findings", [])
-                if findings:
-                    lines.append(f"## Key Findings ({len(findings)})")
-                    lines.append("_Concise takeaways before details_")
-                    lines.append("")
-                    for i, finding in enumerate(findings, 1):
-                        benefit = finding.get("benefit") or finding.get("solution", "")
-                        summary_line = (
-                            benefit.split("\n")[0][:220]
-                            if isinstance(benefit, str)
-                            else "See details below."
-                        )
-                        lines.append(
-                            f"- {i}. {finding.get('title', 'Recommendation')} — {summary_line} (Difficulty: {finding.get('difficulty', 'Unknown')}, Community Score: {finding.get('community_score', 'N/A')}/100)"
-                        )
-                    lines.append("")
-
-                    lines.append("## Detailed Recommendations")
-                    if ENHANCED_UTILITIES_AVAILABLE:
-                        lines.append(
-                            "*Enhanced with quality scoring and intelligent deduplication*"
-                        )
-                    lines.append("")
-
-                    for i, finding in enumerate(findings, 1):
-                        lines.extend(
-                            [
-                                f"### {i}. {finding.get('title', 'Recommendation')}",
-                                "",
-                                f"**Difficulty:** {finding.get('difficulty', 'Unknown')} | **Community Score:** {finding.get('community_score', 'N/A')}/100",
-                                "",
-                                "#### Problem",
-                                finding.get(
-                                    "problem", "No problem description available."
-                                ),
-                                "",
-                                "#### Solution",
-                                finding.get("solution", "No solution provided."),
-                                "",
-                                "#### Benefits",
-                                finding.get("benefit", "No benefits listed."),
-                                "",
-                                "#### Evidence",
-                                finding.get(
-                                    "evidence", "No community evidence available."
-                                ),
-                                "",
-                                "#### Important Considerations",
-                                finding.get(
-                                    "gotchas", "No special considerations noted."
-                                ),
-                                "",
-                                "---",
-                                "",
-                            ]
-                        )
-
-                    # Add source summary
-                    lines.append("---")
-                    lines.append("")
-                    lines.append("## Sources & Content Metrics")
-                    lines.append("")
-                    for source, stats in shape_stats.get("per_source", {}).items():
-                        shapes = stats.get("shapes", {})
-                        shape_parts = [
-                            f"{name}:{count}"
-                            for name, count in shapes.items()
-                            if isinstance(count, int) and count > 0
-                        ]
-                        shape_text = (
-                            ", ".join(shape_parts)
-                            if shape_parts
-                            else "no text captured"
-                        )
-                        label = stats.get("label", SOURCE_LABELS.get(source, source))
-                        lines.append(
-                            f"- {label}: {stats.get('total', 0)} items ({shape_text})"
-                        )
-                    lines.append("")
-                    lines.append(
-                        "_Content sizes: sentence ≤200 chars · paragraph ≤800 chars · page >800 chars_"
-                    )
-                    lines.append("")
-                    lines.append(f"**Total Results Found:** {total_results}")
-
-                # Add search metrics footer
-                lines.append("")
-                lines.append("---")
-                lines.append("")
-                lines.append("## Search Stats")
-                lines.append("")
-                sources_queried = [s for s in source_lists.keys() if source_lists[s]]
-                lines.append(
-                    f"- **Sources queried:** {len(sources_queried)} ({', '.join(SOURCE_LABELS.get(s, s) for s in sources_queried)})"
+            payload = normalize_masterclass_payload(
+                synthesis,
+                top_evidence,
+                params.language,
+                enrichment,
+            )
+            if synthesis.get("error"):
+                payload.setdefault("assumptions", []).append(
+                    f"LLM synthesis error: {synthesis.get('error')}"
                 )
-                lines.append(f"- **Results found:** {total_results}")
-                lines.append(f"- **Cache:** miss")
+            conflicts_auto = detect_conflicts_from_findings(payload.get("findings", []))
 
-                # Add All-Star snapshot
-                if all_star_meta.get("top_overall"):
-                    lines.append("")
-                    lines.append("## All-Star (auto-scored, corroborated)")
-                    for item in all_star_meta["top_overall"]:
-                        lines.append(
-                            f"- {item['title']} ({item['source']}) | score {item['score']} | corroboration x{item['corroboration']} | {item['url']}"
-                        )
+            sources_present = [s for s in source_lists.keys() if source_lists[s]]
+            search_meta = {
+                "sources": [SOURCE_LABELS.get(s, s) for s in sources_present],
+                "source_count": len(sources_present),
+                "total_results": total_results,
+                "enriched_query": search_query,
+                "expanded_queries": enrichment.get("expanded_queries", []),
+                "evidence_weak": len(top_evidence) < 2,
+                "all_star": all_star_meta,
+                "audit_log": audit_log,
+                "shape_stats": shape_stats,
+            }
 
-                # Append audit summary
-                if audit_log:
-                    lines.append("")
-                    lines.append("## Audit (per-source)")
-                    for entry in audit_log:
-                        lines.append(
-                            f"- {entry['source']}: {entry['status']} ({entry['result_count']} results, {entry['duration_ms']}ms"
-                            + (", fallback" if entry.get("used_fallback") else "")
-                            + (
-                                f", error={entry['error']}"
-                                if entry.get("error")
-                                else ""
-                            )
-                            + ")"
-                        )
-
-                result = "\n".join(lines)
+            if params.response_format == ResponseFormat.MARKDOWN:
+                result = render_masterclass_markdown(
+                    params.topic,
+                    params.language,
+                    params.goal,
+                    params.current_setup,
+                    payload,
+                    conflicts_auto,
+                    search_meta,
+                )
             else:
-                # JSON format
                 response = {
                     "language": params.language,
                     "topic": params.topic,
-                    "total_sources": total_results,
-                    "findings": synthesis.get("findings", []),
-                    "error": synthesis.get("error"),
-                    "sources_searched": {
-                        "stackoverflow": len(source_lists.get("stackoverflow", [])),
-                        "github": len(source_lists.get("github", [])),
-                        "reddit": len(source_lists.get("reddit", [])),
-                        "hackernews": len(source_lists.get("hackernews", [])),
-                    },
+                    "goal": params.goal,
+                    "current_setup": params.current_setup,
+                    "findings": payload.get("findings", []),
+                    "conflicts": payload.get("conflicts", []) + conflicts_auto,
+                    "recommended_path": payload.get("recommended_path", []),
+                    "quick_apply": payload.get("quick_apply", {}),
+                    "verification": payload.get("verification", []),
+                    "assumptions": payload.get("assumptions", []),
+                    "synthesis_summary": payload.get("synthesis_summary", ""),
                     "all_star": all_star_meta,
-                    "audit": audit_log,
+                    "search_meta": search_meta,
                 }
                 result = json.dumps(response, indent=2)
 
-            # Check character limit
             if len(result) > CHARACTER_LIMIT:
-                # Truncate findings
                 if params.response_format == ResponseFormat.JSON:
                     response_dict = json.loads(result)
                     original_count = len(response_dict.get("findings", []))
-                    response_dict["findings"] = response_dict["findings"][
-                        : max(1, original_count // 2)
-                    ]
+                    response_dict["findings"] = response_dict["findings"][: max(1, original_count // 2)]
                     response_dict["truncated"] = True
                     response_dict["truncation_message"] = (
                         f"Response truncated from {original_count} to {len(response_dict['findings'])} findings due to size limits."
@@ -2331,7 +2650,6 @@ async def community_search(params: CommunitySearchInput) -> str:
                         + "\n\n[Response truncated due to size limits. Use JSON format for full data.]"
                     )
 
-            # Cache and return
             set_cached_result(cache_key, result)
             return result
 
@@ -2346,11 +2664,10 @@ async def community_search(params: CommunitySearchInput) -> str:
                 )
                 return error_response
 
-            # Wait before retry (exponential backoff)
             await asyncio.sleep(2**attempt)
 
-    # Should never reach here, but just in case
     return json.dumps({"error": "Unexpected error", "findings": []}, indent=2)
+
 
 
 # ============================================================================

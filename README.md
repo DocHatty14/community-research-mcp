@@ -128,39 +128,56 @@ REDDIT_CLIENT_SECRET=your_secret
 
 **Query:** "Rust wgpu PipelineCompilationOptions removed in latest version"
 
-**Result:**
-```markdown
-# Community Research: wgpu PipelineCompilationOptions
+**Result (excerpt):**
 
-## 🔍 Stack Overflow (Score: 85)
-**Issue:** `compilation_options` field removed in wgpu 0.19
-**Solution:** Use `ShaderModuleDescriptor` directly
-[Source](https://stackoverflow.com/questions/...)
+# Community Research: wgpu PipelineCompilationOptions removal
+- Goal: Fix compile errors after upgrading to wgpu 0.19
+- Context: Rust, WGSL shaders
 
-## 🐛 GitHub Issue #4528 (Score: 92)
-**Breaking change:** PipelineCompilationOptions deprecated in favor of new descriptor API
-**Migration code from Bevy engine team:**
+## Findings (ranked)
+1) Stack Overflow (Score: 88, Date: 2024-03-11, Votes/Stars: 42)
+   - Issue: `compilation_options` removed from `ShaderModuleDescriptor` in 0.19
+   - Solution: Use `ShaderSource::Wgsl` in `ShaderModuleDescriptor`; options API is gone.
+   - Evidence: https://stackoverflow.com/q/xxxxx - "PipelineCompilationOptions was removed in 0.19; create the shader with the new descriptor fields."
+   - Code:
 ```rust
-// Old (0.18)
-let shader = device.create_shader_module(ShaderModuleDescriptor {
-    compilation_options: PipelineCompilationOptions::default(),
-    ..
-});
-
-// New (0.19+)
-let shader = device.create_shader_module(ShaderModuleDescriptor {
-    label: Some("shader"),
-    source: ShaderSource::Wgsl(code.into()),
+let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some("main"),
+    source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
 });
 ```
-[wgpu Issue #4528](https://github.com/gfx-rs/wgpu/issues/4528)
+2) GitHub wgpu#4528 (Score: 92, Date: 2024-02-28, Stars/Votes: 37)
+   - Issue: API cleanup deprecated PipelineCompilationOptions.
+   - Solution: Replace `compilation_options` with `ShaderSource::Wgsl`; no replacement options exist.
+   - Evidence: https://github.com/gfx-rs/wgpu/issues/4528 - "Removed PipelineCompilationOptions; shader modules now only take label/source."
+3) Bevy migration guide 0.13 (Score: 75, Date: 2024-03-05)
+   - Issue: Breakage on wgpu upgrade.
+   - Solution: Example patch removes `compilation_options` entirely.
+   - Evidence: https://bevyengine.org/learn/book/migration/0.13/ - "wgpu 0.19 removes PipelineCompilationOptions; adjust shader creation accordingly."
 
-## 💬 Reddit r/rust_gamedev (Score: 78)
-Discussion: "wgpu 0.19 breaking changes megathread"
-Recommended: Update to new descriptor pattern, old API completely removed
+## Conflicts & Edge Cases
+- No replacement options API; if you need specialization constants, use WGSL `override` or the SPIR-V path.
+
+## Recommended Path
+1. Update shader creation to the new descriptor API.
+2. Rebuild; if using SPIR-V, switch to `ShaderSource::SpirV(Cow<[u32]>)`.
+3. Run `cargo tree | findstr wgpu` to ensure all crates target 0.19+.
+
+## Quick-apply Code/Commands
+```rust
+let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some("main"),
+    source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+});
 ```
+
+## Verification
+- `cargo build` passes without `compilation_options` errors.
+- If Bevy: `cargo run -p app --features bevy_winit` launches without shader init failures.
 
 ---
+
+Run `python tools/golden_eval.py <output.md>` to lint a result for required sections/evidence, and see `tools/golden_tasks.py` for quick regression prompts.
 
 ### Standard Search
 
