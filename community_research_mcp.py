@@ -112,7 +112,13 @@ from core import (
     ModelOrchestrator,
     get_available_llm_provider,
 )
-from api import search_stackoverflow, search_github, search_hackernews
+from api import (
+    search_firecrawl,
+    search_github,
+    search_hackernews,
+    search_stackoverflow,
+    search_tavily,
+)
 
 
 # Set up logging
@@ -131,6 +137,14 @@ except ImportError:
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
 REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET")
 REDDIT_REFRESH_TOKEN = os.getenv("REDDIT_REFRESH_TOKEN")
+
+# Optional premium web search providers
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
+FIRECRAWL_API_URL = os.getenv(
+    "FIRECRAWL_API_URL", "https://api.firecrawl.dev/v1/search"
+)
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+TAVILY_API_URL = os.getenv("TAVILY_API_URL", "https://api.tavily.com/search")
 
 # Check if Reddit credentials are available
 reddit_authenticated = False
@@ -199,6 +213,20 @@ SOURCE_POLICIES: Dict[str, Dict[str, Any]] = {
         "max_results": 15,
         "max_results_expanded": 30,
         "read_only": True,
+    },
+    "firecrawl": {
+        "min_query_length": 6,
+        "max_results": 12,
+        "max_results_expanded": 25,
+        "read_only": True,
+        "fallback": "duckduckgo",
+    },
+    "tavily": {
+        "min_query_length": 6,
+        "max_results": 12,
+        "max_results_expanded": 25,
+        "read_only": True,
+        "fallback": "duckduckgo",
     },
 }
 
@@ -1004,6 +1032,16 @@ async def aggregate_search_results(
         ),
     }
 
+    if FIRECRAWL_API_KEY:
+        tasks["firecrawl"] = asyncio.create_task(
+            run_source("firecrawl", search_firecrawl, language, normalized_query)
+        )
+
+    if TAVILY_API_KEY:
+        tasks["tavily"] = asyncio.create_task(
+            run_source("tavily", search_tavily, language, normalized_query)
+        )
+
     raw_results: Dict[str, Any] = {}
     for source, task in tasks.items():
         results, audit_entry = await task
@@ -1128,6 +1166,8 @@ def compute_multi_factor_score(
         "hackernews": 0.75,
         "reddit": 0.7,
         "duckduckgo": 0.6,
+        "firecrawl": 0.65,
+        "tavily": 0.65,
     }.get(normalized["source"], 0.5)
 
     recency = normalized.get("recency_days")
@@ -3875,6 +3915,12 @@ async def streaming_community_search(
             "duckduckgo": search_duckduckgo,  # Added duckduckgo
         }
 
+        if FIRECRAWL_API_KEY:
+            search_functions["firecrawl"] = search_firecrawl
+
+        if TAVILY_API_KEY:
+            search_functions["tavily"] = search_tavily
+
         # Stream results and synthesis
         output_parts = []
 
@@ -4075,7 +4121,7 @@ async def parallel_multi_source_search(
         query (str): Search query
         language (str): Programming language context
         sources (Optional[str]): Comma-separated list of sources or "all"
-            Options: stackoverflow, github, reddit, hackernews, duckduckgo
+            Options: stackoverflow, github, reddit, hackernews, duckduckgo, firecrawl, tavily
             Default: "all"
         context (Context): MCP context for progress reporting
 
@@ -4096,8 +4142,21 @@ async def parallel_multi_source_search(
         )
 
     # Parse sources
+    available_sources = [
+        "stackoverflow",
+        "github",
+        "reddit",
+        "hackernews",
+        "duckduckgo",
+    ]
+
+    if FIRECRAWL_API_KEY:
+        available_sources.append("firecrawl")
+    if TAVILY_API_KEY:
+        available_sources.append("tavily")
+
     if sources == "all":
-        source_list = ["stackoverflow", "github", "reddit", "hackernews", "duckduckgo"]
+        source_list = available_sources
     else:
         source_list = [s.strip() for s in sources.split(",")]
 
@@ -4109,6 +4168,12 @@ async def parallel_multi_source_search(
         "hackernews": search_hackernews,
         "duckduckgo": search_duckduckgo,
     }
+
+    if FIRECRAWL_API_KEY:
+        source_map["firecrawl"] = search_firecrawl
+
+    if TAVILY_API_KEY:
+        source_map["tavily"] = search_tavily
 
     # Filter to requested sources
     search_functions = {
@@ -4143,6 +4208,8 @@ async def parallel_multi_source_search(
             query=query,
             language=language,
             context=context,
+            search_firecrawl_func=search_functions.get("firecrawl"),
+            search_tavily_func=search_functions.get("tavily"),
         ):
             if update["type"] == "complete":
                 all_results = update["state"].results_by_source
