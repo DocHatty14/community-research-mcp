@@ -284,18 +284,18 @@ async def get_all_search_results_streaming(
     Yields progressive updates as results arrive.
     """
     search_functions = {
-        "stackoverflow": search_stackoverflow_func,
-        "github": search_github_func,
-        "reddit": search_reddit_func,
-        "hackernews": search_hackernews_func,
-        "duckduckgo": search_duckduckgo_func,
+        name: func
+        for name, func in {
+            "stackoverflow": search_stackoverflow_func,
+            "github": search_github_func,
+            "reddit": search_reddit_func,
+            "hackernews": search_hackernews_func,
+            "duckduckgo": search_duckduckgo_func,
+            "firecrawl": search_firecrawl_func,
+            "tavily": search_tavily_func,
+        }.items()
+        if func is not None
     }
-
-    if search_firecrawl_func:
-        search_functions["firecrawl"] = search_firecrawl_func
-
-    if search_tavily_func:
-        search_functions["tavily"] = search_tavily_func
 
     async for update in parallel_streaming_search(
         search_functions, query, language, context
