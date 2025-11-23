@@ -27,6 +27,7 @@ import logging
 import math
 import re
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -306,14 +307,85 @@ class QualityScorer:
     Provides 40% boost in user confidence by making quality transparent.
     """
 
-    def __init__(self):
-        self.scoring_weights = {
-            "source_authority": 0.22,  # Stack Overflow > Reddit > Forums
-            "community_validation": 0.23,  # Votes, stars, adoption
-            "recency": 0.20,  # Newer content scores higher
-            "specificity": 0.20,  # Detailed solutions score higher
-            "evidence_quality": 0.15,  # Code examples, benchmarks
-        }
+    _PRESETS: Dict[str, Dict[str, Any]] = {
+        "balanced": {
+            "weights": {
+                "source_authority": 0.22,
+                "community_validation": 0.23,
+                "recency": 0.20,
+                "specificity": 0.20,
+                "evidence_quality": 0.15,
+            },
+            "source_bias": {},
+        },
+        # Emphasize concrete fixes and supporting evidence
+        "bugfix-heavy": {
+            "weights": {
+                "source_authority": 0.20,
+                "community_validation": 0.18,
+                "recency": 0.17,
+                "specificity": 0.25,
+                "evidence_quality": 0.20,
+            },
+            "source_bias": {"stackoverflow": 1.08, "github": 1.05},
+        },
+        # Prioritize measured performance guidance
+        "perf-tuning": {
+            "weights": {
+                "source_authority": 0.18,
+                "community_validation": 0.25,
+                "recency": 0.17,
+                "specificity": 0.15,
+                "evidence_quality": 0.25,
+            },
+            "source_bias": {"github": 1.08, "hackernews": 1.05},
+        },
+        # Favor recent, authoritative migration guides
+        "migration": {
+            "weights": {
+                "source_authority": 0.25,
+                "community_validation": 0.18,
+                "recency": 0.25,
+                "specificity": 0.17,
+                "evidence_quality": 0.15,
+            },
+            "source_bias": {"duckduckgo": 0.95},
+        },
+    }
+
+    def __init__(self, preset: str = "balanced"):
+        self.preset = preset.lower()
+        self.scoring_weights = self._PRESETS.get(self.preset, self._PRESETS["balanced"])[
+            "weights"
+        ]
+        self.source_bias = self._PRESETS.get(self.preset, self._PRESETS["balanced"])[
+            "source_bias"
+        ]
+
+    def set_preset(self, preset: str) -> None:
+        """Update weighting preset without recreating the scorer."""
+
+        chosen = self._PRESETS.get(preset.lower(), self._PRESETS["balanced"])
+        self.preset = preset.lower()
+        self.scoring_weights = chosen["weights"]
+        self.source_bias = chosen["source_bias"]
+
+    def _detect_repro_steps(self, text: str) -> bool:
+        normalized = text.lower()
+        repro_keywords = [
+            "steps to reproduce",
+            "repro steps",
+            "reproduction",
+            "replicate",
+            "reproducible",
+        ]
+        if any(keyword in normalized for keyword in repro_keywords):
+            return True
+
+        # Ordered or numbered lists often indicate repro directions
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        numbered = [line for line in lines if re.match(r"^\d+\.\s", line)]
+        return len(numbered) >= 2
 
     def score_finding(self, finding: Dict[str, Any]) -> int:
         """
@@ -379,20 +451,32 @@ class QualityScorer:
             (specificity_score / 100) * self.scoring_weights["specificity"] * 100
         )
 
-        # Evidence quality (presence of links, examples, benchmarks)
+        # Evidence quality (presence of links, examples, benchmarks, repro steps)
         has_link = bool(finding.get("url"))
         has_code = "```" in combined_text or "`" in combined_text
         has_numbers = bool(re.search(r"\d+%|\d+x faster|\d+ms", combined_text))
+        has_repro = self._detect_repro_steps(combined_text)
 
         evidence_score = min(
             100,
-            (40 if has_link else 0)
+            (30 if has_link else 0)
             + (45 if has_code else 0)
-            + (25 if has_numbers else 0),
+            + (25 if has_numbers else 0)
+            + (30 if has_repro else 0),
         )
         total_score += (
             (evidence_score / 100) * self.scoring_weights["evidence_quality"] * 100
         )
+
+        # Stricter penalty for missing evidence or repro details
+        if not has_code and not has_repro:
+            total_score -= 12
+        if not has_link:
+            total_score -= 5
+
+        # Apply per-source bias from preset
+        bias = self.source_bias.get(source, 1.0)
+        total_score *= bias
 
         return int(min(100, max(0, total_score)))
 
@@ -438,12 +522,23 @@ def deduplicate_results(
         url = result.get("url", "").strip()
         title = result.get("title", "").lower().strip()
 
-        normalized_url = url.rstrip("/").split("?")[0] if url else ""
+        normalized_url = ""
+        if url:
+            try:
+                parsed = urllib.parse.urlparse(url)
+                hostname = parsed.netloc.lower().lstrip("www.")
+                path = parsed.path.rstrip("/")
+                normalized_url = urllib.parse.urlunparse(
+                    ("", hostname, path, "", "", "")
+                )
+            except Exception:
+                normalized_url = url.rstrip("/").split("?")[0]
+
         if normalized_url:
             return normalized_url
 
         if len(title) > 12:
-            return title
+            return _normalize_title(title)
 
         snippet = result.get("snippet") or result.get("content") or ""
         if snippet:
@@ -451,16 +546,31 @@ def deduplicate_results(
 
         return hashlib.md5(json.dumps(result, sort_keys=True).encode("utf-8")).hexdigest()
 
+    def _normalize_title(title: str) -> str:
+        normalized = title.lower().strip()
+        normalized = normalized.replace(" – stack overflow", "").replace(
+            " - stack overflow", ""
+        )
+        normalized = normalized.replace(" | hacker news", "").replace(
+            " | stackoverflow", ""
+        )
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized
+
     deduped_results: Dict[str, List[Dict[str, Any]]] = {
         source: [] for source in search_results.keys()
     }
     scorer = QualityScorer()
     best_by_key: Dict[str, Dict[str, Any]] = {}
     key_sources: Dict[str, str] = {}
+    title_index: Dict[str, str] = {}
 
     for source, results in search_results.items():
         for result in results:
             dedupe_key = _build_dedupe_key(result)
+            normalized_title = _normalize_title(result.get("title", "")) if result.get("title") else ""
+            if normalized_title and normalized_title in title_index:
+                dedupe_key = title_index[normalized_title]
 
             scored_result = {**result}
             scored_result.setdefault("source", source)
@@ -472,6 +582,8 @@ def deduplicate_results(
             if not existing or scored_result["quality_score"] > existing["quality_score"]:
                 best_by_key[dedupe_key] = scored_result
                 key_sources[dedupe_key] = scored_result.get("source", source)
+                if normalized_title:
+                    title_index[normalized_title] = dedupe_key
 
     for dedupe_key, result in best_by_key.items():
         source = key_sources.get(dedupe_key, result.get("source", "unknown"))
