@@ -6,9 +6,66 @@ OpenRouter, and Perplexity APIs with JSON response parsing.
 """
 
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, Sequence, Union
 
 import httpx
+
+DEFAULT_TIMEOUT = 60.0
+
+
+def _clean_json_text(raw_text: str) -> str:
+    """Remove common markdown fences and whitespace from model output."""
+
+    cleaned = raw_text
+    for fence in ("```json\n", "```json", "```"):
+        cleaned = cleaned.replace(fence, "")
+    return cleaned.strip()
+
+
+def _parse_json_text(raw_text: str, provider: str) -> Dict[str, Any]:
+    """Convert provider text content into a JSON payload with clear errors."""
+
+    cleaned = _clean_json_text(raw_text)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as exc:  # pragma: no cover - defensive branch
+        message = f"Provider {provider} returned invalid JSON: {exc.msg}"
+        raise ValueError(message) from exc
+
+
+def _extract_text_field(
+    data: Dict[str, Any], path: Sequence[Union[str, int]], provider: str
+) -> str:
+    """Safely walk a nested provider response and return a text field."""
+
+    current: Any = data
+    for key in path:
+        try:
+            current = current[key]
+        except (KeyError, IndexError, TypeError) as exc:
+            message = f"Unexpected {provider} response structure; missing {key!r}"
+            raise ValueError(message) from exc
+
+    if not isinstance(current, str):
+        message = (
+            f"Expected {provider} response text at {list(path)} "
+            f"but received {type(current).__name__}"
+        )
+        raise ValueError(message)
+
+    return current
+
+
+async def _post_json(
+    url: str, payload: Dict[str, Any], headers: Iterable[tuple[str, str]] | None = None
+) -> Dict[str, Any]:
+    """Execute a JSON POST request and return the decoded body."""
+
+    normalized_headers = dict(headers or [])
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        response = await client.post(url, headers=normalized_headers, json=payload)
+        response.raise_for_status()
+        return response.json()
 
 
 async def call_gemini(api_key: str, prompt: str) -> Dict[str, Any]:
@@ -20,29 +77,22 @@ async def call_gemini(api_key: str, prompt: str) -> Dict[str, Any]:
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4096},
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, json=payload)
-        response.raise_for_status()
-        data = response.json()
+    data = await _post_json(url, payload)
+    text = _extract_text_field(
+        data, ("candidates", 0, "content", "parts", 0, "text"), "gemini"
+    )
 
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-
-        # Clean up markdown code blocks if present
-        text = (
-            text.replace("```json\n", "")
-            .replace("\n```", "")
-            .replace("```", "")
-            .strip()
-        )
-
-        return json.loads(text)
+    return _parse_json_text(text, "gemini")
 
 
 async def call_openai(api_key: str, prompt: str) -> Dict[str, Any]:
     """Call OpenAI API."""
     url = "https://api.openai.com/v1/chat/completions"
 
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
     payload = {
         "model": "gpt-4o-mini",
@@ -57,20 +107,9 @@ async def call_openai(api_key: str, prompt: str) -> Dict[str, Any]:
         "max_tokens": 4096,
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-
-        text = data["choices"][0]["message"]["content"]
-        text = (
-            text.replace("```json\n", "")
-            .replace("\n```", "")
-            .replace("```", "")
-            .strip()
-        )
-
-        return json.loads(text)
+    data = await _post_json(url, payload, headers=headers.items())
+    text = _extract_text_field(data, ("choices", 0, "message", "content"), "openai")
+    return _parse_json_text(text, "openai")
 
 
 async def call_anthropic(api_key: str, prompt: str) -> Dict[str, Any]:
@@ -90,27 +129,19 @@ async def call_anthropic(api_key: str, prompt: str) -> Dict[str, Any]:
         "messages": [{"role": "user", "content": prompt}],
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-
-        text = data["content"][0]["text"]
-        text = (
-            text.replace("```json\n", "")
-            .replace("\n```", "")
-            .replace("```", "")
-            .strip()
-        )
-
-        return json.loads(text)
+    data = await _post_json(url, payload, headers=headers.items())
+    text = _extract_text_field(data, ("content", 0, "text"), "anthropic")
+    return _parse_json_text(text, "anthropic")
 
 
 async def call_openrouter(api_key: str, prompt: str) -> Dict[str, Any]:
     """Call OpenRouter API."""
     url = "https://openrouter.ai/api/v1/chat/completions"
 
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
     payload = {
         "model": "google/gemini-2.0-flash-exp:free",
@@ -119,27 +150,21 @@ async def call_openrouter(api_key: str, prompt: str) -> Dict[str, Any]:
         "max_tokens": 4096,
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-
-        text = data["choices"][0]["message"]["content"]
-        text = (
-            text.replace("```json\n", "")
-            .replace("\n```", "")
-            .replace("```", "")
-            .strip()
-        )
-
-        return json.loads(text)
+    data = await _post_json(url, payload, headers=headers.items())
+    text = _extract_text_field(
+        data, ("choices", 0, "message", "content"), "openrouter"
+    )
+    return _parse_json_text(text, "openrouter")
 
 
 async def call_perplexity(api_key: str, prompt: str) -> Dict[str, Any]:
     """Call Perplexity API."""
     url = "https://api.perplexity.ai/chat/completions"
 
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
     payload = {
         "model": "llama-3.1-sonar-small-128k-online",
@@ -148,17 +173,8 @@ async def call_perplexity(api_key: str, prompt: str) -> Dict[str, Any]:
         "max_tokens": 4096,
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-
-        text = data["choices"][0]["message"]["content"]
-        text = (
-            text.replace("```json\n", "")
-            .replace("\n```", "")
-            .replace("```", "")
-            .strip()
-        )
-
-        return json.loads(text)
+    data = await _post_json(url, payload, headers=headers.items())
+    text = _extract_text_field(
+        data, ("choices", 0, "message", "content"), "perplexity"
+    )
+    return _parse_json_text(text, "perplexity")
