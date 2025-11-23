@@ -30,6 +30,8 @@ class SearchCapability(Enum):
     DUCKDUCKGO = "duckduckgo"
     BRAVE = "brave"
     SERPER = "serper"
+    FIRECRAWL = "firecrawl"
+    TAVILY = "tavily"
     WEB_SCRAPING = "web_scraping"
 
 
@@ -79,6 +81,8 @@ def detect_all_capabilities() -> SystemCapabilities:
         # Premium search APIs (if keys available)
         SearchCapability.BRAVE.value: bool(os.getenv("BRAVE_SEARCH_API_KEY")),
         SearchCapability.SERPER.value: bool(os.getenv("SERPER_API_KEY")),
+        SearchCapability.FIRECRAWL.value: bool(os.getenv("FIRECRAWL_API_KEY")),
+        SearchCapability.TAVILY.value: bool(os.getenv("TAVILY_API_KEY")),
     }
 
     # Detect LLM providers
@@ -151,6 +155,8 @@ SOURCE_LABELS = {
     "reddit": "Reddit thread",
     "hackernews": "Hacker News discussion",
     "duckduckgo": "Web page (DuckDuckGo)",
+    "firecrawl": "Web page (Firecrawl)",
+    "tavily": "Web page (Tavily)",
 }
 
 

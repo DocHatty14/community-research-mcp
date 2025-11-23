@@ -120,6 +120,19 @@ REDDIT_CLIENT_ID=your_id
 REDDIT_CLIENT_SECRET=your_secret
 ```
 
+### Optional web search integrations (plug-and-play)
+
+Firecrawl and Tavily can be added just by dropping their API keys into `.env`—the server auto-detects them and includes the extra sources in streaming searches and capability reports.
+
+- **Firecrawl:**
+  - `FIRECRAWL_API_KEY=your_key_here`
+  - (Optional) `FIRECRAWL_API_URL=https://api.firecrawl.dev/v1/search`
+- **Tavily:**
+  - `TAVILY_API_KEY=your_key_here`
+  - (Optional) `TAVILY_API_URL=https://api.tavily.com/search`
+
+No additional code changes are required; restart the server after updating `.env`.
+
 ---
 
 ## Usage
