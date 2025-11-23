@@ -58,6 +58,9 @@ async def search_tavily(
             )
 
         return results
-    except Exception as exc:  # pragma: no cover - network guarded
-        logging.error(f"Tavily search failed: {exc}")
+    except httpx.HTTPError:  # pragma: no cover - network guarded
+        logging.exception("Tavily HTTP error during search")
+        return []
+    except Exception:  # pragma: no cover - unexpected error
+        logging.exception("Tavily unexpected error during search")
         return []

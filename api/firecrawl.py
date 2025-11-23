@@ -67,6 +67,9 @@ async def search_firecrawl(query: str, language: Optional[str] = None) -> List[D
             )
 
         return results
-    except Exception as exc:  # pragma: no cover - network guarded
-        logging.error(f"Firecrawl search failed: {exc}")
+    except httpx.HTTPError:  # pragma: no cover - network guarded
+        logging.exception("Firecrawl HTTP error during search")
+        return []
+    except Exception:  # pragma: no cover - unexpected error
+        logging.exception("Firecrawl unexpected error during search")
         return []
