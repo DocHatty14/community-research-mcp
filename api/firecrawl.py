@@ -10,9 +10,8 @@ DEFAULT_TIMEOUT = 30.0
 
 
 def _build_payload(query: str, language: Optional[str]) -> Dict[str, Any]:
-    if language:
-        return {"q": f"{language} {query}"}
-    return {"q": query}
+    enriched_query = f"{language} {query}" if language else query
+    return {"query": enriched_query}
 
 
 async def search_firecrawl(query: str, language: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -43,7 +42,16 @@ async def search_firecrawl(query: str, language: Optional[str] = None) -> List[D
             response.raise_for_status()
             data = response.json()
 
-        items = data.get("data") or data.get("results") or []
+        raw_items = data.get("data") or data.get("results") or []
+        items: List[Dict[str, Any]] = []
+        if isinstance(raw_items, dict):
+            for bucket in ("web", "news", "images"):
+                bucket_items = raw_items.get(bucket) or []
+                if isinstance(bucket_items, list):
+                    items.extend(bucket_items)
+        elif isinstance(raw_items, list):
+            items = raw_items
+
         results: List[Dict[str, Any]] = []
 
         for item in items:
@@ -60,16 +68,20 @@ async def search_firecrawl(query: str, language: Optional[str] = None) -> List[D
                     "url": url,
                     "snippet": item.get("description")
                     or item.get("content")
+                    or item.get("markdown")
                     or "",
-                    "content": item.get("content") or "",
+                    "content": item.get("content")
+                    or item.get("markdown")
+                    or "",
                     "source": "firecrawl",
                 }
             )
 
-        return results
     except httpx.HTTPError:  # pragma: no cover - network guarded
         logging.exception("Firecrawl HTTP error during search")
         return []
     except Exception:  # pragma: no cover - unexpected error
         logging.exception("Firecrawl unexpected error during search")
         return []
+    else:
+        return results
