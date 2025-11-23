@@ -3,7 +3,13 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["community_research_mcp", "streaming_capabilities", "streaming_search", "enhanced_mcp_utilities"]
+py-modules = [
+    "community_research_mcp",
+    "streaming_capabilities",
+    "streaming_search",
+    "enhanced_mcp_utilities",
+]
+packages = ["api", "core", "models", "tools", "utils"]
 
 [project]
 name = "community-research-mcp"
