@@ -92,8 +92,9 @@ try:
     )
 
     ENHANCED_UTILITIES_AVAILABLE = True
-    # Initialize quality scorer
-    _quality_scorer = QualityScorer()
+    # Initialize quality scorer with optional preset
+    _quality_preset = os.getenv("QUALITY_SCORER_PRESET", "balanced")
+    _quality_scorer = QualityScorer(_quality_preset)
     print("Enhanced utilities active (with circuit breakers)")
 except ImportError:
     ENHANCED_UTILITIES_AVAILABLE = False

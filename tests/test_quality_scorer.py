@@ -36,6 +36,43 @@ class QualityScorerTests(unittest.TestCase):
         self.assertGreater(fresh_score, stale_score)
         self.assertGreaterEqual(fresh_score - stale_score, 15)
 
+    def test_preset_can_shift_weights(self):
+        balanced = QualityScorer()
+        bugfix = QualityScorer(preset="bugfix-heavy")
+
+        finding = {
+            "source": "github",
+            "score": 10,
+            "answer_count": 2,
+            "comments": 1,
+            "age_days": 30,
+            "snippet": "```python\nfix = True\n```",  # code heavy
+            "solution": "",
+            "url": "https://example.com/repo/issues/1",
+        }
+
+        self.assertGreater(bugfix.score_finding(finding), balanced.score_finding(finding))
+
+    def test_downranks_when_missing_repro(self):
+        evidence_rich = {
+            "source": "stackoverflow",
+            "score": 8,
+            "answer_count": 1,
+            "comments": 2,
+            "age_days": 40,
+            "snippet": "Steps to reproduce:\n1. Run script\n2. Observe crash\n```python\nprint('x')\n```",
+            "solution": "",
+            "url": "https://example.com/post",
+        }
+
+        vague = {
+            **evidence_rich,
+            "snippet": "It might work, try again later",
+            "url": "https://example.com/post-2",
+        }
+
+        self.assertGreater(self.scorer.score_finding(evidence_rich), self.scorer.score_finding(vague))
+
 
 class DeduplicationTests(unittest.TestCase):
     def test_deduplicate_prefers_high_quality(self):
@@ -71,6 +108,37 @@ class DeduplicationTests(unittest.TestCase):
         self.assertGreater(
             deduped["stackoverflow"][0].get("quality_score", 0), 0
         )
+
+    def test_deduplicate_overlapping_titles(self):
+        search_results = {
+            "stackoverflow": [
+                {
+                    "title": "Fix widget issue - Stack Overflow",
+                    "url": "https://example.com/post",
+                    "score": 6,
+                    "answer_count": 1,
+                    "snippet": "Detailed fix with code",
+                    "age_days": 10,
+                    "source": "stackoverflow",
+                }
+            ],
+            "github": [
+                {
+                    "title": "Fix widget issue",
+                    "url": "https://example.com/post?ref=gh",
+                    "score": 3,
+                    "answer_count": 0,
+                    "snippet": "Partial workaround",
+                    "age_days": 20,
+                    "source": "github",
+                }
+            ],
+        }
+
+        deduped = deduplicate_results(search_results)
+
+        self.assertEqual(len(deduped["stackoverflow"]), 1)
+        self.assertFalse(deduped.get("github"))
 
 
 if __name__ == "__main__":

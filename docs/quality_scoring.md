@@ -14,12 +14,20 @@ Scores run 0–100 and are tuned to concentrate trustworthy answers near the top
 
 Maintainer-confirmed fixes with recent activity and copy-pastable patches usually land in the 90–100 range. Lower-confidence answers stay listed for context but are intentionally demoted.
 
-## Ongoing tuning
+## Presets and deduplication
 
-Planned improvements (tracked in issues) include:
+**Per-source weighting presets:** The scorer supports presets such as `bugfix-heavy`,
+`perf-tuning`, and `migration`. Each preset redistributes the weight given to authority,
+recency, specificity, and evidence, plus small source-specific biases (for example,
+`bugfix-heavy` boosts Stack Overflow and GitHub slightly). Set `QUALITY_SCORER_PRESET`
+in the environment to switch profiles; the default remains balanced.
 
-- Per-source weighting presets (e.g., "bugfix-heavy", "perf-tuning", "migration")
-- Automatic de-duplication across overlapping search results
-- Stricter downranking of answers without repro steps or evidence
+**Automatic deduplication:** Results from all sources are deduplicated using normalized URLs
+(protocol-stripped, query/fragments removed, `www` trimmed) and normalized titles that remove
+common site suffixes. The highest-quality version of an overlapping result is retained and the
+rest are dropped.
 
-These adjustments aim to keep the default feed dominated by high-scoring, actionable items.
+**Downranking low-evidence answers:** Findings without code blocks or reproduction details now
+incur additional penalties. Evidence signals (links, code, benchmarks, repro steps) feed a
+dedicated evidence score, and missing evidence can lower the overall quality score even after
+other heuristics are applied.
