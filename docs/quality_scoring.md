@@ -4,13 +4,13 @@ Community Research MCP ranks findings from community sources so that high-qualit
 
 ## Rubric
 
-Scores run 0–100 and are tuned to concentrate trustworthy answers near the top of the stream. The weights bias toward battle-tested fixes rather than raw popularity:
+Scores run 0–100 and are tuned to concentrate trustworthy answers near the top of the stream. The default **balanced** preset weights each signal so battle-tested fixes rise ahead of raw popularity:
 
-- **Authority (30%)** — Stack Overflow accepted answers, GitHub issues with maintainer replies, and reputable docs outrank anonymous posts.
-- **Community validation (25%)** — Upvotes, stars, and answer counts are normalized so widely agreed solutions rise first.
-- **Recency (20%)** — Newer fixes get a boost to avoid stale workarounds.
-- **Specificity (15%)** — Step-by-step fixes and repro details beat generic advice.
-- **Evidence (10%)** — Inline code, benchmarks, or patch snippets add proof.
+- **Authority (~22%)** — Stack Overflow accepted answers, GitHub issues with maintainer replies, and reputable docs outrank anonymous posts.
+- **Community validation (~23%)** — Upvotes, stars, and answer counts are normalized so widely agreed solutions rise first.
+- **Recency (~20%)** — Newer fixes get a boost to avoid stale workarounds.
+- **Specificity (~20%)** — Step-by-step fixes and repro details beat generic advice.
+- **Evidence (~15%)** — Inline code, benchmarks, or patch snippets add proof.
 
 Maintainer-confirmed fixes with recent activity and copy-pastable patches usually land in the 90–100 range. Lower-confidence answers stay listed for context but are intentionally demoted.
 
