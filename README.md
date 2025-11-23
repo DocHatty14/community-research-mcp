@@ -73,16 +73,9 @@ Results stream in real-time as they're found:
 - GitHub: ~1.2s
 - Full synthesis: ~4s
 
-### Quality Scoring
+### How we rank results
 
-Results are scored 0-100 using heuristics that seem reasonable:
-- Source authority: Stack Overflow > GitHub > Reddit (25%)
-- Community validation: upvotes, stars, answer counts (30%)
-- Recency: newer content scores higher (15%)
-- Specificity: detailed solutions > generic advice (20%)
-- Evidence: code examples, benchmarks (10%)
-
-These weights are somewhat arbitrary and not configurable. They generally help surface better results, but you might disagree with the priorities.
+Results are ranked to keep maintainer-backed fixes and well-evidenced answers at the top of the stream. Detailed scoring notes live in [`docs/quality_scoring.md`](docs/quality_scoring.md) so the README can stay focused on what the tool does rather than internal heuristics.
 
 ---
 
