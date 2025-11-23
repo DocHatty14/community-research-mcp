@@ -24,6 +24,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -307,11 +308,11 @@ class QualityScorer:
 
     def __init__(self):
         self.scoring_weights = {
-            "source_authority": 0.25,  # Stack Overflow > Reddit > Forums
-            "community_validation": 0.30,  # Votes, stars, adoption
-            "recency": 0.15,  # Newer content scores higher
+            "source_authority": 0.22,  # Stack Overflow > Reddit > Forums
+            "community_validation": 0.23,  # Votes, stars, adoption
+            "recency": 0.20,  # Newer content scores higher
             "specificity": 0.20,  # Detailed solutions score higher
-            "evidence_quality": 0.10,  # Code examples, benchmarks
+            "evidence_quality": 0.15,  # Code examples, benchmarks
         }
 
     def score_finding(self, finding: Dict[str, Any]) -> int:
@@ -346,9 +347,10 @@ class QualityScorer:
         answer_count = finding.get("answer_count", 0)
         comments = finding.get("comments", 0)
 
-        validation_score = min(
-            100, (community_score * 10) + (answer_count * 5) + (comments * 2)
-        )
+        vote_score = math.log1p(max(0, community_score)) * 25
+        answers_score = math.log1p(max(0, answer_count)) * 15
+        comments_score = math.log1p(max(0, comments)) * 10
+        validation_score = min(100, vote_score + answers_score + comments_score)
         total_score += (
             (validation_score / 100)
             * self.scoring_weights["community_validation"]
@@ -357,8 +359,10 @@ class QualityScorer:
 
         # Recency (prefer recent content, but not too harshly penalize old)
         # Assume age in days if provided, otherwise neutral score
-        age_days = finding.get("age_days", 180)  # Default to 6 months
-        recency_score = max(0, 100 - (age_days / 10))  # Degrade 1 point per 10 days
+        age_days = max(0, finding.get("age_days", 180))  # Default to 6 months
+        recency_score = max(0, 100 - (age_days * 0.5))  # Degrade 1 point per 2 days
+        if age_days <= 14:
+            recency_score = min(100, recency_score + 10)  # Fresh boost for <2 weeks
         total_score += (recency_score / 100) * self.scoring_weights["recency"] * 100
 
         # Specificity (based on snippet/solution length and detail)
@@ -370,7 +374,7 @@ class QualityScorer:
         code_blocks = len(re.findall(r"```|`[^`]+`", combined_text))
         text_length = len(combined_text)
 
-        specificity_score = min(100, (text_length / 10) + (code_blocks * 15))
+        specificity_score = min(100, (text_length / 12) + (code_blocks * 22))
         total_score += (
             (specificity_score / 100) * self.scoring_weights["specificity"] * 100
         )
@@ -380,7 +384,12 @@ class QualityScorer:
         has_code = "```" in combined_text or "`" in combined_text
         has_numbers = bool(re.search(r"\d+%|\d+x faster|\d+ms", combined_text))
 
-        evidence_score = (has_link * 40) + (has_code * 40) + (has_numbers * 20)
+        evidence_score = min(
+            100,
+            (40 if has_link else 0)
+            + (45 if has_code else 0)
+            + (25 if has_numbers else 0),
+        )
         total_score += (
             (evidence_score / 100) * self.scoring_weights["evidence_quality"] * 100
         )
@@ -425,42 +434,48 @@ def deduplicate_results(
     Returns:
         Deduplicated search results
     """
-    seen_urls: Set[str] = set()
-    seen_titles: Set[str] = set()
-    deduped_results = {}
+    def _build_dedupe_key(result: Dict[str, Any]) -> str:
+        url = result.get("url", "").strip()
+        title = result.get("title", "").lower().strip()
 
-    # Track quality scores for duplicate resolution
+        normalized_url = url.rstrip("/").split("?")[0] if url else ""
+        if normalized_url:
+            return normalized_url
+
+        if len(title) > 12:
+            return title
+
+        snippet = result.get("snippet") or result.get("content") or ""
+        if snippet:
+            return hashlib.md5(snippet.encode("utf-8")).hexdigest()
+
+        return hashlib.md5(json.dumps(result, sort_keys=True).encode("utf-8")).hexdigest()
+
+    deduped_results: Dict[str, List[Dict[str, Any]]] = {
+        source: [] for source in search_results.keys()
+    }
     scorer = QualityScorer()
+    best_by_key: Dict[str, Dict[str, Any]] = {}
+    key_sources: Dict[str, str] = {}
 
     for source, results in search_results.items():
-        unique_results = []
-
         for result in results:
-            url = result.get("url", "").strip()
-            title = result.get("title", "").lower().strip()
+            dedupe_key = _build_dedupe_key(result)
 
-            # Normalize URL (remove trailing slashes, query params for comparison)
-            normalized_url = url.rstrip("/").split("?")[0] if url else ""
+            scored_result = {**result}
+            scored_result.setdefault("source", source)
+            scored_result["quality_score"] = scored_result.get("quality_score") or scorer.score_finding(
+                scored_result
+            )
 
-            # Check for duplicates
-            is_duplicate = False
+            existing = best_by_key.get(dedupe_key)
+            if not existing or scored_result["quality_score"] > existing["quality_score"]:
+                best_by_key[dedupe_key] = scored_result
+                key_sources[dedupe_key] = scored_result.get("source", source)
 
-            if normalized_url and normalized_url in seen_urls:
-                is_duplicate = True
-            elif title and title in seen_titles:
-                # Allow some title variation
-                if len(title) > 20:  # Only dedupe longer titles
-                    is_duplicate = True
-
-            if not is_duplicate:
-                unique_results.append(result)
-
-                if normalized_url:
-                    seen_urls.add(normalized_url)
-                if title:
-                    seen_titles.add(title)
-
-        deduped_results[source] = unique_results
+    for dedupe_key, result in best_by_key.items():
+        source = key_sources.get(dedupe_key, result.get("source", "unknown"))
+        deduped_results.setdefault(source, []).append(result)
 
     # Log deduplication stats
     original_count = sum(len(results) for results in search_results.values())
