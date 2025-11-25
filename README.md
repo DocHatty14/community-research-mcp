@@ -1,33 +1,31 @@
 # Community Research MCP
 
-![download](https://github.com/user-attachments/assets/0cf397e9-cc69-4ee7-8c45-6c0ad7a3b676)
+> **Street-smart tips, hacks, and workarounds from devs who've been there.**
 
-> **Find real solutions from developers who've solved your problem before.**
-
-An MCP server that searches Stack Overflow, GitHub Issues, Hacker News, and other developer communities to find battle-tested solutions, workarounds, and implementation patterns.
+An MCP server that digs through Stack Overflow, GitHub Issues, Hacker News, and other developer watering holes to find battle-tested solutions, clever workarounds, and real-world patterns that actually work.
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  "How do I handle FastAPI background tasks with Redis?"            │
-│                                                                     │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌────────────┐ │
-│  │ Stack       │  │ GitHub      │  │ Hacker      │  │ Discourse  │ │
-│  │ Overflow    │  │ Issues      │  │ News        │  │ Forums     │ │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └─────┬──────┘ │
-│         │                │                │               │        │
-│         └────────────────┴────────────────┴───────────────┘        │
-│                                   │                                 │
-│                          ┌────────▼────────┐                       │
-│                          │   Deduplicate   │                       │
-│                          │   & Score       │                       │
-│                          └────────┬────────┘                       │
-│                                   │                                 │
-│                          ┌────────▼────────┐                       │
-│                          │  Ranked Results │                       │
-│                          │  with Quality   │                       │
-│                          │  Scores 0-100   │                       │
-│                          └─────────────────┘                       │
-└─────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│  "How do I handle FastAPI background tasks with Redis?"                │
+│                                                                        │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────┐  │
+│  │ Stack        │  │ GitHub       │  │ Hacker       │  │ Discourse  │  │
+│  │ Overflow     │  │ Issues       │  │ News         │  │ Forums     │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └─────┬──────┘  │
+│         │                 │                 │                │         │
+│         └─────────────────┴─────────────────┴────────────────┘         │
+│                                  │                                     │
+│                         ┌────────▼────────┐                            │
+│                         │   Deduplicate   │                            │
+│                         │    & Score      │                            │
+│                         └────────┬────────┘                            │
+│                                  │                                     │
+│                         ┌────────▼────────┐                            │
+│                         │  Ranked Results │                            │
+│                         │  with Quality   │                            │
+│                         │  Scores 0-100   │                            │
+│                         └─────────────────┘                            │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
@@ -35,20 +33,20 @@ An MCP server that searches Stack Overflow, GitHub Issues, Hacker News, and othe
 ### Installation
 
 ```bash
-# Clone the repository
+# Clone the repo
 git clone https://github.com/your-repo/community-research-mcp.git
 cd community-research-mcp
 
-# Install dependencies
+# Install deps
 pip install -e .
 
-# Or with uv
+# Or with uv (faster)
 uv pip install -e .
 ```
 
 ### Configure Claude Desktop
 
-Add to your `claude_desktop_config.json`:
+Drop this into your `claude_desktop_config.json`:
 
 ```json
 {
@@ -64,48 +62,48 @@ Add to your `claude_desktop_config.json`:
 
 ### Basic Usage
 
-Ask Claude:
+Just ask Claude:
 
 > "Search for Python async database connection pooling patterns"
 
-The MCP will search across developer communities and return ranked solutions with quality scores.
+The MCP taps into developer communities and surfaces ranked solutions with quality scores.
 
 ---
 
-## Features
+## What It Does
 
 ### Multi-Source Search
 
-Searches 9 developer communities simultaneously:
+Hits 9 developer communities at once:
 
-| Source | Type | API Key Required |
-|--------|------|------------------|
-| **Stack Overflow** | Q&A | No |
-| **GitHub Issues** | Bug reports, discussions | No (optional for higher limits) |
-| **Hacker News** | Tech discussions | No |
-| **Lobsters** | Technical articles | No |
-| **Discourse** | Language-specific forums | No |
-| **Serper** | Google Search | Yes |
+| Source | What You Get | API Key? |
+|--------|--------------|----------|
+| **Stack Overflow** | Q&A gold | Nope |
+| **GitHub Issues** | Bug reports, workarounds | Optional (higher limits) |
+| **Hacker News** | Tech war stories | Nope |
+| **Lobsters** | Deep technical dives | Nope |
+| **Discourse** | Language-specific forums | Nope |
+| **Serper** | Google Search results | Yes |
 | **Tavily** | AI-optimized search | Yes |
 | **Brave** | Privacy-focused search | Yes |
 | **Firecrawl** | Web scraping | Yes |
 
 ### Quality Scoring
 
-Every result gets a quality score (0-100) based on:
+Every result gets a street-cred score (0-100) based on:
 
-- **Source Authority** — Stack Overflow answers weighted higher than random blog posts
-- **Community Validation** — Upvotes, accepted answers, reactions
-- **Recency** — Recent solutions for evolving technologies
-- **Specificity** — Code examples and detailed explanations
-- **Evidence** — Benchmarks, reproduction steps, real metrics
+- **Source Authority** — Stack Overflow accepted answers beat random blog posts
+- **Community Validation** — Upvotes, reactions, the crowd has spoken
+- **Recency** — Fresh fixes for fast-moving tech
+- **Specificity** — Actual code, not hand-wavy explanations
+- **Evidence** — Benchmarks, repro steps, real numbers
 
-### Reliability Features
+### Built-In Reliability
 
-- **Circuit Breaker** — Prevents cascading failures when APIs are down
-- **Automatic Retry** — Exponential backoff for transient failures
-- **Deduplication** — Removes duplicate results across sources (~20% reduction)
-- **Caching** — 1-hour TTL to reduce API calls
+- **Circuit Breaker** — Stops hammering dead APIs
+- **Auto-Retry** — Exponential backoff for flaky connections
+- **Deduplication** — Kills duplicate results (~20% noise reduction)
+- **Caching** — 1-hour TTL so you don't burn through rate limits
 
 ---
 
@@ -116,7 +114,7 @@ Every result gets a quality score (0-100) based on:
 Create a `.env` file:
 
 ```bash
-# Optional: Web Search APIs (enable more sources)
+# Optional: Web Search APIs (unlock more sources)
 SERPER_API_KEY=your_key        # https://serper.dev
 TAVILY_API_KEY=your_key        # https://tavily.com
 BRAVE_SEARCH_API_KEY=your_key  # https://brave.com/search/api
@@ -134,7 +132,7 @@ REDDIT_REFRESH_TOKEN=your_token
 
 ### Source Weights
 
-Configure source priorities in `config.json`:
+Tweak source priorities in `config.json`:
 
 ```json
 {
@@ -147,11 +145,11 @@ Configure source priorities in `config.json`:
 }
 ```
 
-Higher weights = more trusted for "street-smart" solutions.
+Higher weight = more trusted for street-smart solutions.
 
 ---
 
-## Architecture
+## Project Structure
 
 ```
 community-research-mcp/
@@ -182,7 +180,7 @@ community-research-mcp/
 
 ### `community_search`
 
-Primary search tool. Searches all enabled sources and returns ranked results.
+The main workhorse. Searches all enabled sources and returns ranked results.
 
 ```
 language: "Python"
@@ -193,15 +191,15 @@ current_setup: "FastAPI + PostgreSQL + SQLAlchemy 2.0"
 
 ### `get_source_status`
 
-Check health of all sources — which are enabled, have API keys, circuit breaker state.
+Check what's up with all sources — enabled, has API keys, circuit breaker tripped, etc.
 
 ### `get_rate_limit_status`
 
-View rate limit quotas and usage across all APIs.
+See how much quota you've burned through across all APIs.
 
 ### `clear_cache`
 
-Clear the search result cache.
+Nuke the search cache when you need fresh results.
 
 ---
 
@@ -251,21 +249,21 @@ mypy .
 
 ### "No results found"
 
-- Check that your topic is specific enough (not just "performance" or "settings")
-- Verify API keys are set for web search sources
-- Check `get_source_status` for circuit breaker state
+- Make your query more specific (not just "performance" or "settings")
+- Check that API keys are set for web search sources
+- Run `get_source_status` to see if circuit breakers tripped
 
 ### "Rate limit exceeded"
 
-- Wait for the rate limit window to reset
+- Chill and wait for the window to reset
 - Add API keys for higher limits
-- Use caching to reduce repeated searches
+- Rely on caching to avoid repeat searches
 
 ### "Source is failing"
 
 - Check `get_source_status` for circuit breaker state
-- Circuit breaker opens after 5 failures, resets after 5 minutes
-- Some sources may be temporarily unavailable
+- Breaker trips after 5 failures, resets after 5 minutes
+- Sometimes sources just go down — it happens
 
 ---
 
@@ -277,14 +275,14 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-1. Fork the repository
+1. Fork the repo
 2. Create a feature branch
 3. Make your changes
 4. Run tests and linting
-5. Submit a pull request
+5. Submit a PR
 
 ---
 
 <p align="center">
-  <i>Built for developers who want real solutions, not documentation.</i>
+  <i>Built for devs who want real solutions, not documentation fluff.</i>
 </p>
