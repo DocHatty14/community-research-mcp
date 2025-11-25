@@ -2971,6 +2971,13 @@ async def get_server_context() -> str:
     """
     workspace_context = detect_workspace_context()
 
+    # Get detected language for defaults
+    detected_language = (
+        workspace_context["languages"][0]
+        if workspace_context["languages"]
+        else "Python"
+    )
+
     context = {
         "handshake": {
             "server": "community-research-mcp",
@@ -2986,10 +2993,83 @@ async def get_server_context() -> str:
             },
         },
         "project_context": workspace_context,
-        "context_defaults": {
-            "language": workspace_context["languages"][0]
-            if workspace_context["languages"]
-            else None
+        "context_defaults": {"language": detected_language},
+        # LLM-FRIENDLY: Explicit tool schemas so LLMs know exactly how to call each tool
+        "tool_schemas": {
+            "community_search": {
+                "description": "Primary search tool - find street-smart solutions from the community",
+                "parameters": {
+                    "language": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Programming language (e.g., 'Python', 'JavaScript', 'Rust')",
+                        "default_from_context": detected_language,
+                    },
+                    "topic": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Specific, detailed topic. Be VERY specific - minimum 10 chars. Example: 'FastAPI background task queue with Redis'",
+                        "min_length": 10,
+                    },
+                    "goal": {
+                        "type": "string",
+                        "required": False,
+                        "description": "What you want to achieve (e.g., 'async task processing without blocking requests')",
+                    },
+                    "current_setup": {
+                        "type": "string",
+                        "required": False,
+                        "description": "Your current tech stack - HIGHLY RECOMMENDED for better results",
+                    },
+                    "response_format": {
+                        "type": "string",
+                        "required": False,
+                        "enum": ["markdown", "json"],
+                        "default": "markdown",
+                    },
+                },
+                "example": {
+                    "language": "Python",
+                    "topic": "FastAPI background task queue with Redis and Celery",
+                    "goal": "Process long-running tasks without blocking API responses",
+                    "current_setup": "FastAPI app with SQLAlchemy, deployed on Docker",
+                    "response_format": "json",
+                },
+            },
+            "deep_community_search": {
+                "description": "Deep dive search - searches multiple angles automatically for complex problems",
+                "parameters": {
+                    "language": {"type": "string", "required": True},
+                    "topic": {"type": "string", "required": True, "min_length": 10},
+                    "goal": {"type": "string", "required": False},
+                    "current_setup": {"type": "string", "required": False},
+                },
+                "example": {
+                    "language": "JavaScript",
+                    "topic": "Electron app memory leaks and performance optimization",
+                    "goal": "Reduce memory usage and prevent crashes in production",
+                },
+            },
+            "plan_research": {
+                "description": "Create a strategic research plan BEFORE searching - use for complex multi-faceted questions",
+                "parameters": {
+                    "language": {"type": "string", "required": True},
+                    "topic": {"type": "string", "required": True},
+                    "goal": {"type": "string", "required": False},
+                    "current_setup": {"type": "string", "required": False},
+                },
+                "when_to_use": "Architecture decisions, comparing libraries, migration planning",
+            },
+        },
+        # Quick reference for common mistakes
+        "llm_tips": {
+            "common_mistakes": [
+                "DON'T use 'query' - use 'topic' instead",
+                "DON'T use 'max_results' - not a valid parameter",
+                "DON'T use vague topics like 'settings' or 'performance' - be specific!",
+            ],
+            "required_fields": ["language", "topic"],
+            "optional_but_recommended": ["goal", "current_setup"],
         },
     }
 
