@@ -4,9 +4,9 @@
 
 ![download](https://github.com/user-attachments/assets/20f7470f-ae0c-4010-8bdf-e07da6a3f769)
 
-**Where the official documentation ends and real solutions begin.**
+**Where the official documentation ends and actual street-smart solutions begin.**
 
-*A Model Context Protocol server that aggregates developer community knowledge — Stack Overflow answers, GitHub issue fixes, Reddit discussions, and forum wisdom — into structured, LLM-ready output.*
+*A Model Context Protocol server that finds real fixes from real developers — the workarounds, hacks, and "this finally worked for me" solutions from Stack Overflow, GitHub Issues, Reddit, and forums.*
 
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=flat-square)](https://www.python.org/)
@@ -16,21 +16,19 @@
 
 ---
 
-## Overview
+## What This Does
 
-Community Research MCP is a specialized search aggregator for developer communities. It queries multiple sources in parallel, deduplicates and scores results, and returns structured findings optimized for LLM consumption via the Model Context Protocol.
+Most AI tools give you textbook answers. Community Research MCP finds what actually works in production:
 
-**What it does:**
-- Parallel async queries across 10+ sources (Stack Overflow, GitHub Issues, HN, Reddit, Discourse, Lobsters, + web search APIs)
-- Circuit breakers and exponential backoff for reliability
-- URL/title-based deduplication (~25-30% reduction)
-- Weighted quality scoring (authority, validation, recency, evidence)
-- Structured JSON/Markdown output with code snippets and source links
+- **Stack Overflow** — Accepted answers AND the real fix buried in comment #3
+- **GitHub Issues** — Closed issues with workarounds, maintainer-approved fixes
+- **Reddit** — "Don't use X, use Y instead" discussions
+- **Hacker News** — Architecture critiques from experienced developers
+- **Discourse Forums** — Framework-specific community wisdom
+- **Lobsters** — Technical deep-dives
+- **Web Search APIs** — Brave, Google (Serper), Tavily, Firecrawl for broader coverage
 
-**What it doesn't do:**
-- Semantic/vector search (keyword + scoring only)
-- Real-time streaming (results return after all sources complete)
-- Proprietary data access (public APIs only)
+**The Mission:** Find the messy workarounds, the battle-tested hacks, the "after 6 hours I finally figured out" solutions that people actually use.
 
 ---
 
@@ -59,12 +57,12 @@ Benchmarked November 25, 2025:
 | Tavily | ~1,222ms | Requires API key |
 | Firecrawl | ~1,248ms | Requires API key |
 
-### Reliability
+### Reliability Engineering
 
-- **Circuit Breakers** — 5-failure threshold, 5-minute cooldown
+- **Circuit Breakers** — 5-failure threshold, 5-minute cooldown prevents cascade failures
 - **Exponential Backoff** — 1s → 2s → 4s retry delays
 - **Graceful Degradation** — Returns partial results when sources fail
-- **24-hour Cache** — Reduces API load (caveat: may return stale results for fast-moving topics)
+- **24-hour Cache** — Cold: ~4.5s → Cached: <1ms
 
 ### Smart Query Distribution
 
@@ -72,11 +70,11 @@ To avoid rate limits while maximizing result diversity, multi-query searches are
 
 | Query | API Group | Sources |
 |-------|-----------|---------|
-| Primary | All sources | SO, GitHub, HN, + all configured APIs |
+| Primary | All sources | SO, GitHub, HN + all configured APIs |
 | Secondary | Web search | Brave, Tavily, Serper (if configured) |
-| Tertiary | Supplementary | Reddit, Lobsters, Discourse, Firecrawl |
+| Tertiary | Community | Reddit, Lobsters, Discourse, Firecrawl |
 
-Each API is called once per search — different query variations go to different groups.
+Each API is called once per search — different query variations go to different groups, avoiding rate limits while still getting diverse results from multiple phrasings.
 
 ---
 
@@ -99,22 +97,23 @@ cp .env.example .env
 
 ### API Keys
 
-**Required:** None — core functionality works with free public APIs
+**Required:** None — works with free public APIs
 
-**Optional (enhanced coverage):**
+**Optional (for enhanced results):**
 
 ```env
-BRAVE_SEARCH_API_KEY=       # https://brave.com/search/api/
-SERPER_API_KEY=             # https://serper.dev/
-TAVILY_API_KEY=             # https://tavily.com/
-FIRECRAWL_API_KEY=          # https://firecrawl.dev/
+# Web Search APIs (all optional, add any/all)
+BRAVE_SEARCH_API_KEY=your_key      # https://brave.com/search/api/
+SERPER_API_KEY=your_key            # https://serper.dev/
+TAVILY_API_KEY=your_key            # https://tavily.com/
+FIRECRAWL_API_KEY=your_key         # https://firecrawl.dev/
 
-# Enhanced Reddit (optional)
-REDDIT_CLIENT_ID=
-REDDIT_CLIENT_SECRET=
+# Enhanced Reddit access (optional)
+REDDIT_CLIENT_ID=your_id
+REDDIT_CLIENT_SECRET=your_secret
 ```
 
-The server auto-detects configured APIs and adjusts query distribution accordingly.
+The server auto-detects which APIs are configured and adjusts query distribution accordingly.
 
 ---
 
@@ -140,11 +139,11 @@ Add to your MCP client (e.g., Claude Desktop):
 
 ### `get_server_context`
 
-Returns server capabilities, detected workspace context, and tool schemas. **Call this first** — it helps LLMs understand available parameters and avoid common mistakes.
+**Call this first.** Returns server capabilities, detected workspace context, and LLM-friendly tool schemas.
 
 ### `community_search`
 
-Primary search tool.
+Primary search tool for finding street-smart solutions.
 
 ```python
 community_search(
@@ -158,56 +157,84 @@ community_search(
 
 ### `deep_community_search`
 
-Multi-phase research for complex problems. Runs multiple searches with different angles.
+Multi-phase deep research for complex problems. Runs multiple searches with different angles.
 
 ### `plan_research`
 
-Creates a research plan before searching. Useful for architecture decisions or comparing approaches.
+Creates a strategic research plan before searching — useful for architecture decisions or comparing approaches.
 
 ---
 
-## Output Format
+## Example Output
 
-Results are returned with quality scores (0-100) and tiered presentation:
+**Query:** "Rust wgpu PipelineCompilationOptions removed"
 
 ```markdown
-# Community Research: Python async error handling
+# Community Research: Rust wgpu PipelineCompilationOptions removed
 
 | | |
 |:--|:--|
-| **Language** | Python |
-| **Evidence** | 52 results · 8 sources · ✓ Strong |
-
-## ⭐ Best Matches
-
-### 1. asyncio exception handling patterns
-`████████░░` **87** · stackoverflow · 82% relevant
-
-**Issue:** Unhandled exceptions in asyncio tasks silently fail
-
-**Solution:** Use `asyncio.gather(..., return_exceptions=True)` or wrap in try/except
-
-[View Code] [View Source]
+| **Language** | Rust |
+| **Evidence** | 12 results · 8 sources · ✓ Strong |
 
 ---
 
-## More Results
-...
+## ⭐ Best Matches
+
+### 1. API cleanup deprecated PipelineCompilationOptions
+
+`████████░░` **92** · github · 89% relevant
+
+**Issue:** API cleanup deprecated PipelineCompilationOptions in wgpu 0.19
+
+**Solution:** Replace with `ShaderSource::Wgsl`; shader modules now only take label/source
+
+<details><summary>📄 View Code</summary>
+
+```rust
+let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some("main"),
+    source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+});
 ```
 
-All results are returned — quality tiers are informational, not filtered. The consuming LLM decides what's relevant.
+</details>
+
+🔗 [View Source](https://github.com/gfx-rs/wgpu/issues/4528)
+```
+
+**Output Philosophy:** All results returned with relevance scores. Quality tiers (⭐ Best Matches vs More Results) are informational — nothing filtered out. The consuming LLM decides what's useful.
 
 ---
 
 ## Quality Scoring
 
+Results are scored 0-100 based on real signals:
+
 | Signal | Weight | Description |
 |--------|--------|-------------|
-| Authority | ~22% | Maintainer replies, accepted answers |
+| Authority | ~22% | Maintainer replies, accepted answers, reputable sources |
 | Community Validation | ~23% | Upvotes, stars, answer counts |
 | Recency | ~20% | Newer solutions preferred |
-| Specificity | ~20% | Step-by-step fixes over generic advice |
-| Evidence | ~15% | Code snippets, reproduction steps |
+| Specificity | ~20% | Step-by-step fixes beat generic advice |
+| Evidence | ~15% | Code snippets, benchmarks, reproduction steps |
+
+---
+
+## Source Weights
+
+Community sources weighted higher than web search:
+
+| Source | Weight | Rationale |
+|--------|--------|-----------|
+| Stack Overflow | 10 | Accepted answers with real fixes |
+| GitHub Issues | 9 | Real bugs, real solutions |
+| Discourse | 8 | Framework-specific wisdom |
+| Lobsters | 7 | Technical depth |
+| Hacker News | 6 | Industry experience |
+| Reddit | 6 | Honest community discussions |
+| Brave/Serper/Tavily | 4 | Broader coverage |
+| Firecrawl | 3 | Web scraping fallback |
 
 ---
 
@@ -232,13 +259,22 @@ community-research-mcp/
 
 ### Data Flow
 
-1. **Query Enrichment** — Expands query with variations for broader coverage
-2. **Distributed Search** — Queries distributed across API groups (avoids rate limits)
-3. **Parallel Execution** — All sources in each group queried via asyncio
+1. **Query Enrichment** — Adds street-smart keywords, generates variations
+2. **Distributed Search** — Queries spread across API groups to avoid rate limits
+3. **Parallel Execution** — All sources queried simultaneously via asyncio
 4. **Normalization** — Results standardized to common schema
-5. **Deduplication** — URL/title matching removes duplicates
-6. **Scoring** — Weighted quality scoring
-7. **Output** — Structured JSON or Markdown
+5. **Deduplication** — URL/title matching removes duplicates (~25-30%)
+6. **Quality Scoring** — Ranked by authority, validation, recency, evidence
+7. **Structured Output** — JSON or Markdown with findings, code snippets, source links
+
+---
+
+## LLM Integration Tips
+
+1. **Call `get_server_context` first** — Returns tool schemas and parameter hints
+2. **Use `topic`, not `query`** — Common mistake: the parameter is `topic`
+3. **Be specific** — "Django ORM N+1 query optimization" beats "performance"
+4. **Include `goal` and `current_setup`** — Context improves results
 
 ---
 
@@ -246,22 +282,11 @@ community-research-mcp/
 
 | Limitation | Details |
 |------------|---------|
-| **Keyword search only** | No semantic/vector search — relies on keyword matching + quality scoring |
+| **Keyword search** | No semantic/vector search — relies on keyword matching + quality scoring |
 | **No streaming** | Results return after all sources complete (~4.5s cold) |
 | **Rate limits** | Free tier limits apply without API keys (SO: 300/day, GH: 60/hr) |
-| **Cache staleness** | 24-hour TTL may return outdated results for rapidly evolving topics |
+| **Cache staleness** | 24-hour TTL may return outdated results for fast-moving topics |
 | **Discourse 404s** | Some language-specific Discourse URLs don't exist |
-| **Reddit limits** | Basic access without credentials |
-
----
-
-## Alternatives
-
-This tool is specialized for developer community aggregation. For other use cases:
-
-- **General web search**: Tavily, Exa, Perplexity
-- **Semantic search**: Build a RAG pipeline with embeddings
-- **Stack Overflow corpus**: Download and index locally
 
 ---
 
@@ -278,10 +303,7 @@ Potential improvements (contributions welcome):
 
 ## Contributing
 
-PRs welcome. Please:
-- Keep changes focused
-- Don't break existing functionality
-- Add tests for new features
+PRs welcome. Keep it simple, don't break existing functionality.
 
 ---
 
@@ -293,6 +315,6 @@ MIT License — see [LICENSE](LICENSE)
 
 <div align="center">
 
-**Aggregating developer community knowledge for LLM tools.**
+**Built for developers who know the real answer is in the comments.**
 
 </div>
