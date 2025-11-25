@@ -5,6 +5,16 @@ This module provides async functions for searching Stack Overflow,
 GitHub Issues, Hacker News, and other developer communities.
 """
 
+# Load environment variables from .env file BEFORE importing API modules
+# This ensures API keys are available when the modules are loaded
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    # python-dotenv not installed, will use system environment variables only
+    pass
+
 from api.brave import search_brave, search_brave_news, search_brave_web
 from api.discourse import search_discourse
 from api.firecrawl import (

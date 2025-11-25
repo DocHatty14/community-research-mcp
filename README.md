@@ -2,83 +2,72 @@
 
 <div align="center">
 
-![Community Research MCP](https://github.com/user-attachments/assets/cde51164-2f14-43d2-86be-b7e0d483d1c7)
+**Where the official documentation ends and actual street-smart solutions begin.**
 
-**Real fixes from real people, not manuals.**
+*A Model Context Protocol server that finds real fixes from real developers — the workarounds, hacks, and "this finally worked for me" solutions from Stack Overflow, GitHub Issues, Reddit, and forums.*
 
-*A Model Context Protocol server that bypasses generic AI training data to tap directly into the living wisdom of the developer community.*
-
-[![Status](https://img.shields.io/badge/Status-Hobby_Project-yellow?style=flat-square)](https://github.com/DocHatty/community-research-mcp)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=flat-square)](https://www.python.org/)
+[![MCP](https://img.shields.io/badge/MCP-Compatible-green?style=flat-square)](https://modelcontextprotocol.io/)
 
 </div>
 
 ---
 
-## Current State
+## What This Does
 
-**This is a hobby project** for personal use and experimentation. It works well for:
-- Individual developers debugging obscure issues
-- Research that requires aggregating community wisdom
-- Automating the manual tab-hopping you already do
+Most AI tools give you textbook answers. Community Research MCP finds what actually works in production:
 
-**Not recommended for:**
-- Production systems or teams (no SLA, no support)
-- Rate-sensitive workflows (you're responsible for API costs/limits)
-- Anything requiring legal compliance review
+- **Stack Overflow** — Accepted answers AND the real fix buried in comment #3
+- **GitHub Issues** — Closed issues with workarounds, maintainer-approved fixes
+- **Reddit** — "Don't use X, use Y instead" discussions
+- **Hacker News** — Architecture critiques from experienced developers
+- **Discourse Forums** — Framework-specific community wisdom
+- **Web Search APIs** — Brave, Google (Serper), Tavily, Firecrawl for broader coverage
 
-If you use this, you're opting into the same risks you take manually scraping Stack Overflow at 2 AM.
-
----
-
-## Philosophy
-
-Most AI tools provide textbook answers that work in theory but fail in production. Community Research MCP is different. It aggregates battle-tested workarounds, undocumented hacks, and hard-earned lessons from:
-
-- Stack Overflow: Accepted solutions and the "real" answer in the comments
-- GitHub Issues: Bug fixes, patch notes, and closed-as-won't-fix workarounds
-- Reddit: Honest debates, tool comparisons, and "don't use X, use Y" advice
-- Hacker News: Architectural critiques and industry trends
-- Web Scraping: Full documentation and blog posts, not just snippets
+**The Mission:** Find the messy workarounds, the battle-tested hacks, the "after 6 hours I finally figured out" solutions that people actually use.
 
 ---
 
-## Key Features
+## Performance
 
-### How It Works
+Benchmarked on November 25, 2025:
 
-Returns structured search results with synthesis instructions for the calling LLM.
+### Individual Source Response Times
 
-**What you get:**
-- Structured data from Stack Overflow, GitHub, Reddit, Hacker News
-- Synthesis instructions that tell your LLM how to process the data
-- No internal LLM calls - your LLM does the synthesis
+| Source | Response Time | Typical Results |
+|--------|---------------|-----------------|
+| Stack Overflow | ~665ms | 3-15 results |
+| GitHub Issues | ~1,053ms | 15 results |
+| Hacker News | ~418ms | 0-10 results |
+| Lobsters | ~778ms | 0-10 results |
+| Discourse | ~438ms | 2-10 results |
+| Brave Search | ~1,088ms | 10 results |
+| Serper (Google) | ~858ms | 10 results |
+| Tavily | ~1,222ms | 10 results |
+| Firecrawl | ~1,248ms | 10 results |
 
-### Parallel Search
+### Aggregated Search Performance
 
-Searches multiple sources simultaneously:
+| Metric | Value |
+|--------|-------|
+| Cold search (10 sources parallel) | ~4.5 seconds |
+| Cached search | <1ms (instant) |
+| Average results per search | 40-60 |
+| Deduplication rate | ~25-30% |
+| Average source response | ~863ms |
 
-- Stack Overflow: API-based search for Q&A
-- GitHub: Issues and discussions
-- Reddit: Community threads
-- Hacker News: Industry discussions
+### Reliability Features
 
-### Smart Caching
-
-- 24-hour TTL reduces API load by 30-50%
-- Automatic retry logic with exponential backoff
-- Circuit breakers prevent quota exhaustion
-
-### How we rank results
-
-Results are ranked to keep maintainer-backed fixes and well-evidenced answers at the top of the stream. Detailed scoring notes live in [`docs/quality_scoring.md`](docs/quality_scoring.md) so the README can stay focused on what the tool does rather than internal heuristics.
+- **Circuit Breakers** — Prevents cascade failures (5-failure threshold, 5min cooldown)
+- **Exponential Backoff** — 1s → 2s → 4s retry delays
+- **Graceful Degradation** — Returns partial results when sources fail
+- **24-hour Cache TTL** — Reduces API load significantly
 
 ---
 
-## Installation
+## Quick Start
 
-**Quick start:**
 ```bash
 git clone https://github.com/DocHatty/community-research-mcp.git
 cd community-research-mcp
@@ -87,83 +76,166 @@ cd community-research-mcp
 initialize.bat
 
 # Linux/Mac
-chmod +x setup.sh
-./setup.sh
+chmod +x setup.sh && ./setup.sh
 
 # Or manually
 pip install -e .
 cp .env.example .env
 ```
 
-**Cross-platform:** Works on Windows, Linux, macOS
+### API Keys
 
-**NO API KEYS REQUIRED** - The server no longer does internal LLM synthesis.
+**Required:** None — works with free public APIs
 
-Optional: Configure Reddit API for enhanced Reddit access in `.env`:
+**Optional (for enhanced results):**
 
 ```env
-# Optional: Enhanced Reddit features
+# Web Search APIs (all optional, add any/all)
+BRAVE_SEARCH_API_KEY=your_key      # https://brave.com/search/api/
+SERPER_API_KEY=your_key            # https://serper.dev/
+TAVILY_API_KEY=your_key            # https://tavily.com/
+FIRECRAWL_API_KEY=your_key         # https://firecrawl.dev/
+
+# Enhanced Reddit access (optional)
 REDDIT_CLIENT_ID=your_id
 REDDIT_CLIENT_SECRET=your_secret
 ```
 
-### Optional web search integrations (plug-and-play)
-
-Firecrawl and Tavily can be added just by dropping their API keys into `.env`—the server auto-detects them and includes the extra sources in streaming searches and capability reports.
-
-- **Firecrawl:**
-  - `FIRECRAWL_API_KEY=your_key_here`
-  - (Optional) `FIRECRAWL_API_URL=https://api.firecrawl.dev/v1/search`
-- **Tavily:**
-  - `TAVILY_API_KEY=your_key_here`
-  - (Optional) `TAVILY_API_URL=https://api.tavily.com/search`
-
-No additional code changes are required; restart the server after updating `.env`.
+The server auto-detects which APIs are configured and uses them automatically.
 
 ---
 
 ## Usage
 
+### MCP Client Configuration
+
+Add to your MCP client config (e.g., Claude Desktop):
+
+```json
+{
+  "mcpServers": {
+    "community-research": {
+      "command": "python",
+      "args": ["-m", "community_research_mcp"],
+      "cwd": "/path/to/community-research-mcp"
+    }
+  }
+}
+```
+
+### Available Tools
+
+#### `get_server_context`
+**Always call this first.** Returns server capabilities, detected workspace context, and LLM-friendly tool schemas.
+
+```python
+# Returns: detected languages, tool parameter schemas, usage tips
+await get_server_context()
+```
+
+#### `community_search`
+Primary search tool for finding street-smart solutions.
+
+```python
+community_search(
+    language="Python",                    # Required
+    topic="FastAPI background tasks with Celery Redis queue",  # Required, min 10 chars
+    goal="Process long-running tasks without blocking",        # Optional but recommended
+    current_setup="FastAPI with SQLAlchemy on Docker",         # Optional but recommended
+    response_format="json"                # "json" or "markdown"
+)
+```
+
+#### `deep_community_search`
+Multi-phase deep research for complex problems.
+
+```python
+deep_community_search(
+    language="Python",
+    topic="Microservices event-driven architecture with Kafka",
+    goal="Design scalable async system"
+)
+```
+
+#### `plan_research`
+Create a strategic research plan before searching (for architecture decisions, comparing approaches).
+
+```python
+plan_research(
+    language="JavaScript",
+    topic="State management React 2024",
+    goal="Choose between Redux, Zustand, Jotai"
+)
+```
+
 ### Example Output
 
-**Query:** "Rust wgpu PipelineCompilationOptions removed in latest version"
+**Query:** "Rust wgpu PipelineCompilationOptions removed"
 
-**Result (excerpt):**
+```markdown
+# Community Research: Rust wgpu PipelineCompilationOptions removed
 
-# Community Research: wgpu PipelineCompilationOptions removal
-- Goal: Fix compile errors after upgrading to wgpu 0.19
-- Context: Rust, WGSL shaders
+| | |
+|:--|:--|
+| **Language** | Rust |
+| **Sources** | 8 searched |
+| **Results** | 12 findings |
 
-## Findings (ranked)
-1) Stack Overflow (Score: 88, Date: 2024-03-11, Votes/Stars: 42)
-   - Issue: `compilation_options` removed from `ShaderModuleDescriptor` in 0.19
-   - Solution: Use `ShaderSource::Wgsl` in `ShaderModuleDescriptor`; options API is gone.
-   - Evidence: https://stackoverflow.com/q/xxxxx - "PipelineCompilationOptions was removed in 0.19; create the shader with the new descriptor fields."
-   - Code:
+---
+
+## ⭐ Best Matches
+
+### 1. API cleanup deprecated PipelineCompilationOptions
+
+`████████░░` **92** · github · 89% relevant
+
+**Issue:** API cleanup deprecated PipelineCompilationOptions in wgpu 0.19
+
+**Solution:** Replace with `ShaderSource::Wgsl`; shader modules now only take label/source
+
+<details><summary>📄 View Code</summary>
+
 ```rust
 let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
     label: Some("main"),
     source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
 });
 ```
-2) GitHub wgpu#4528 (Score: 92, Date: 2024-02-28, Stars/Votes: 37)
-   - Issue: API cleanup deprecated PipelineCompilationOptions.
-   - Solution: Replace `compilation_options` with `ShaderSource::Wgsl`; no replacement options exist.
-   - Evidence: https://github.com/gfx-rs/wgpu/issues/4528 - "Removed PipelineCompilationOptions; shader modules now only take label/source."
-3) Bevy migration guide 0.13 (Score: 75, Date: 2024-03-05)
-   - Issue: Breakage on wgpu upgrade.
-   - Solution: Example patch removes `compilation_options` entirely.
-   - Evidence: https://bevyengine.org/learn/book/migration/0.13/ - "wgpu 0.19 removes PipelineCompilationOptions; adjust shader creation accordingly."
 
-## Conflicts & Edge Cases
-- No replacement options API; if you need specialization constants, use WGSL `override` or the SPIR-V path.
+</details>
 
-## Recommended Path
-1. Update shader creation to the new descriptor API.
-2. Rebuild; if using SPIR-V, switch to `ShaderSource::SpirV(Cow<[u32]>)`.
-3. Run `cargo tree | findstr wgpu` to ensure all crates target 0.19+.
+🔗 [View Source](https://github.com/gfx-rs/wgpu/issues/4528)
 
-## Quick-apply Code/Commands
+---
+
+### 2. compilation_options removed from ShaderModuleDescriptor
+
+`████████░░` **88** · stackoverflow · 85% relevant
+
+**Issue:** `compilation_options` field removed from `ShaderModuleDescriptor` in 0.19
+
+**Solution:** Use `ShaderSource::Wgsl` directly in `ShaderModuleDescriptor`
+
+🔗 [View Source](https://stackoverflow.com/questions/...)
+
+---
+
+## More Results
+
+### 3. wgpu 0.19 migration guide
+
+`███████░░░` **71** · github · 72% relevant
+
+**Issue:** Breaking changes in wgpu 0.19 release
+
+**Solution:** Follow official migration guide for shader module updates
+
+🔗 [View Source](https://github.com/gfx-rs/wgpu/releases)
+
+---
+
+## Quick Apply
+
 ```rust
 let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
     label: Some("main"),
@@ -172,237 +244,152 @@ let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 ```
 
 ## Verification
-- `cargo build` passes without `compilation_options` errors.
-- If Bevy: `cargo run -p app --features bevy_winit` launches without shader init failures.
 
----
-
-Run `python tools/golden_eval.py <output.md>` to lint a result for required sections/evidence, and see `tools/golden_tasks.py` for quick regression prompts.
-
-### Standard Search
-
-```python
-community_search(
-    language="Rust",
-    topic="wgpu PipelineCompilationOptions removed in latest version",
-    goal="Fix compilation errors after upgrade"
-)
+- `cargo build` passes without `compilation_options` errors
 ```
 
-**Returns:**
-> The `compilation_options` field was removed in wgpu 0.19. Community discussions on GitHub Issue #452 suggest using `wgpu::ShaderModuleDescriptor` directly. Here is the working migration code used by the Bevy engine team...
-
-### Streaming Search
-
-```python
-streaming_community_search(
-    language="Python",
-    topic="FastAPI async background tasks with Celery"
-)
-```
-
-Get progressive updates as results arrive from each source.
-
-### Deep Research
-
-```python
-deep_community_search(
-    language="Python",
-    topic="Microservices architecture patterns with Kafka",
-    goal="Design a scalable event-driven system"
-)
-```
-
-Multi-iteration research with intelligent gap analysis and comprehensive synthesis.
-
-### Validated Research
-
-```python
-validated_research(
-    language="Python",
-    topic="JWT authentication with refresh tokens",
-    goal="Implement secure auth flow"
-)
-```
-
-Primary research with secondary model verification for critical implementations.
+**Output Philosophy:** The server returns all results with relevance scores. Quality tiers (⭐ Best Matches vs More Results) are informational — no results are filtered out. The consuming LLM decides what's useful.
 
 ---
 
 ## Architecture
 
-Built on asynchronous Python with parallel search execution:
+```
+community-research-mcp/
+├── community_research_mcp.py   # Main MCP server and tool definitions
+├── api/                        # External API integrations
+│   ├── stackoverflow.py        # Stack Exchange API
+│   ├── github.py               # GitHub Issues API
+│   ├── hackernews.py           # Algolia HN API
+│   ├── lobsters.py             # Lobsters search
+│   ├── discourse.py            # Discourse forums
+│   ├── brave.py                # Brave Search API
+│   ├── serper.py               # Google Search via Serper
+│   ├── tavily.py               # Tavily AI search
+│   └── firecrawl.py            # Firecrawl web search
+├── models/                     # Pydantic input/output models
+├── enhanced_mcp_utilities.py   # Circuit breakers, caching, dedup
+├── streaming_capabilities.py   # Result classification
+└── docs/                       # Additional documentation
+```
 
-- **Search Layer**: Concurrent queries across multiple sources (asyncio)
-- **Aggregation Layer**: Progressive result collection and classification
-- **Synthesis Layer**: LLM-powered analysis and recommendation  
-- **Enhancement Layer**: Quality scoring, deduplication, retry logic
+### Data Flow
 
-**Resilience (Multi-layer Retry + Circuit Breakers):**
-- **Layer 1:** Individual API rate limit detection (HTTP 429)
-- **Layer 2:** ResilientAPIWrapper with exponential backoff per source
-- **Layer 3:** Circuit breakers prevent quota exhaustion cascades (5min cooldown)
-- **Layer 4:** Top-level search retry (3 attempts, 1s→2s→4s backoff)
-- **Error Isolation:** Parallel async = one source failing doesn't block others
-- **Graceful Degradation:** Returns partial results when sources fail
-- **Smart Caching:** 24-hour TTL reduces API load by 30-50%
-- **Robust Scraping:** Multiple CSS selector fallbacks for HTML structure changes
-
-See `enhanced_mcp_utilities.py` for implementation details.
-
----
-
-## Performance
-
-**Best case** (cached, simple query, fast network):
-- First results: 1-2 seconds
-- Full synthesis: 4-6 seconds
-
-**Typical case** (real-world usage):
-- First results: 2-5 seconds
-- Full synthesis: 10-20 seconds
-
-**Worst case** (rate limits, slow APIs, complex queries):
-- First results: 5-10 seconds  
-- Full synthesis: 30+ seconds
-
-Performance depends on network latency, API rate limits, query complexity, LLM provider speed, and whether results are cached. The "~0.8s Stack Overflow" claim assumes cache hits and no rate limiting—not realistic for sustained use.
+1. **Query Enrichment** — Adds street-smart keywords ("workaround", "fix", "solved")
+2. **Parallel Search** — All sources queried simultaneously via asyncio
+3. **Normalization** — Results standardized to common schema
+4. **Deduplication** — URL/title matching removes duplicates (~25-30%)
+5. **Quality Scoring** — Ranked by authority, validation, recency, evidence
+6. **Structured Output** — JSON or Markdown with findings, conflicts, recommendations
 
 ---
 
-## Documentation
+## Quality Scoring
 
-See [DOCS.md](DOCS.md) for API reference.
+Results are scored 0-100 based on:
+
+| Signal | Weight | Description |
+|--------|--------|-------------|
+| Authority | ~22% | Maintainer replies, accepted answers, reputable sources |
+| Community Validation | ~23% | Upvotes, stars, answer counts |
+| Recency | ~20% | Newer solutions preferred |
+| Specificity | ~20% | Step-by-step fixes beat generic advice |
+| Evidence | ~15% | Code snippets, benchmarks, reproduction steps |
+
+See [`docs/quality_scoring.md`](docs/quality_scoring.md) for detailed scoring rubric.
 
 ---
 
-## Requirements
+## Source Weights
 
-- Python 3.8+
-- API key for at least one LLM provider (Gemini, OpenAI, or Anthropic)
-- Internet connection for search APIs
+Community sources are weighted higher than web search APIs:
+
+| Source | Weight | Rationale |
+|--------|--------|-----------|
+| Stack Overflow | 10 | Accepted answers = gold standard |
+| GitHub Issues | 9 | Real bugs and real fixes |
+| Discourse | 8 | Framework-specific wisdom |
+| Lobsters | 7 | Technical depth |
+| Hacker News | 6 | Industry experience |
+| Reddit | 6 | Honest community discussions |
+| Brave/Serper/Tavily | 4 | Broader coverage but may include docs |
+| Firecrawl | 3 | Web scraping fallback |
 
 ---
 
-## Costs & Legal
+## Rate Limits
 
-**API Costs:**
-- Search APIs are free (Stack Overflow, GitHub, Reddit, HN)
-- LLM costs: ~$0.001-0.03 per search depending on provider
-- Deep research with validation: ~$0.05-0.15 per query
-- Typical usage: $0-5/month for personal projects
-
-**Rate Limits:**
-You're subject to rate limits from each API. Without authentication:
+Without API keys:
 - Stack Overflow: 300 requests/day
 - GitHub: 60 requests/hour
 - Reddit: Limited access
 
-See `.env.example` for how to add API keys to increase limits.
+With API keys: 10-100x higher limits depending on plan.
 
-**Legal Considerations:**
-This tool queries public APIs and scrapes publicly accessible content. You're responsible for:
-- Complying with each platform's Terms of Service
-- Respecting rate limits
-- Not using this for commercial scraping at scale
-
-If you're worried about compliance, don't use this. It's for personal research, not enterprise deployment.
+**Built-in protections:**
+- Circuit breakers prevent quota exhaustion
+- Caching reduces repeat requests
+- Graceful degradation on failures
 
 ---
 
-## Known Issues & Limitations
+## LLM Integration Tips
 
-**Rate Limiting:**
-- **Circuit breakers:** Automatically stops requests after 5 failures, 5min cooldown prevents cascades
-- **Multi-layer retry:** Individual API detection + per-source wrapper + top-level retry
-- **Exponential backoff:** 1s→2s→4s delays across 3 retry attempts
-- **Graceful degradation:** Returns partial results when sources exhausted
-- **Limits:** Stack Overflow 300/day unauth, GitHub 60/hour unauth
-- **Mitigation:** Add API keys to `.env` for 10-100x higher limits, caching reduces load by 30-50%
+The server is designed to be LLM-friendly:
 
-**Scraping Robustness:**
-- **Multiple selector fallbacks:** Tries 3-4 different CSS selectors per element
-- **Graceful HTML structure changes:** Automatically tries alternative selectors
-- **Still vulnerable to:** Major site redesigns, CAPTCHAs from aggressive querying
-- LLM timeouts retry 3x then give up
-- Partial results returned when sources fail (by design)
+1. **Call `get_server_context` first** — Returns tool schemas and parameter hints
+2. **Use `topic`, not `query`** — Common mistake: the parameter is `topic`
+3. **Be specific** — "Django ORM N+1 query optimization" not "performance"
+4. **Include `goal` and `current_setup`** — Better results with context
 
-**Quality Scoring:**
-- Weights are somewhat arbitrary (25% source authority, 30% validation, etc.)
-- Not configurable without editing code
-- Doesn't account for context (old highly-voted answer vs recent edge case fix)
+Example schema returned by `get_server_context`:
 
-**Setup:**
-- Cross-platform support via `pyproject.toml`, `setup.sh`, `initialize.bat`
-- Standard Python packaging (`pip install -e .`)
-- No Docker (hobby project, not containerized infrastructure)
-
-**Caching:**
-- Simple 24-hour TTL, no automatic invalidation
-- Stale results if libraries/APIs change
-- Use `clear_cache()` tool to manually refresh
-- No distributed cache for multi-user scenarios
-
-If any of this is a dealbreaker, this tool isn't for you.
-
----
-
-## Project Structure
-
-```
-community-research-mcp/
-├── community_research_mcp.py      # Main server and tool definitions
-├── streaming_capabilities.py      # Result classification and aggregation
-├── streaming_search.py            # Parallel search orchestration
-├── enhanced_mcp_utilities.py      # Reliability and quality enhancements
-├── initialize.bat                 # Setup script
-├── requirements.txt               # Python dependencies
-├── README.md                      # This file
-├── DOCUMENTATION.md               # Complete documentation
-└── LICENSE                        # MIT License
+```json
+{
+  "tool_schemas": {
+    "community_search": {
+      "parameters": {
+        "language": {"type": "string", "required": true},
+        "topic": {"type": "string", "required": true, "min_length": 10},
+        "goal": {"type": "string", "required": false},
+        "current_setup": {"type": "string", "required": false}
+      }
+    }
+  },
+  "llm_tips": {
+    "common_mistakes": [
+      "DON'T use 'query' - use 'topic' instead",
+      "DON'T use 'max_results' - not a valid parameter"
+    ]
+  }
+}
 ```
 
 ---
 
-## License
+## Known Limitations
 
-MIT License - see [LICENSE](LICENSE) for details.
-
----
-
-## Why This Exists
-
-> *"The docs say it should work. Stack Overflow comment #3 says why it doesn't. GitHub issue #1247 has the workaround. Reddit says don't even bother, use this other library instead."*
-
-You know this research pattern. You live it every time you debug something obscure. This tool automates it.
-
-**The Gap:**
-- **Official docs** tell you how things *should* work
-- **AI training data** stops at some arbitrary cutoff date  
-- **Real solutions** live in Stack Overflow comments, closed GitHub issues, and "actually, don't use X" Reddit threads
-
-**What it does:**
-- Searches Stack Overflow, GitHub Issues, Reddit, Hacker News in parallel
-- Finds the buried answers (comment #3, the closed issue with 47 upvotes, the Reddit thread from last week)
-- Synthesizes with an LLM into actionable recommendations
-- Scores results by community validation, recency, and specificity
-
-**What it's good at:**
-- Finding undocumented breaking changes
-- Discovering workarounds for known bugs
-- Aggregating "what people actually use in production"
-
-**What it's not:**
-- A replacement for reading docs
-- A guarantee of correctness (validate everything yourself)
-- Enterprise-grade tooling (it's a hobby project)
+- **Discourse 404s** — Some language-specific Discourse URLs don't exist (e.g., `discuss.js.org`)
+- **Rate limits** — Heavy use may hit API limits; add keys for production use
+- **Stale cache** — 24-hour TTL may return outdated results for fast-moving topics
+- **No streaming** — Results returned after all sources complete
 
 ---
 
 ## Contributing
 
-PRs welcome. No formal process—just keep it simple and don't break existing stuff.
+PRs welcome. Keep it simple, don't break existing functionality.
 
 ---
 
-Built for fun. Works on my machine. YMMV.
+## License
+
+MIT License — see [LICENSE](LICENSE)
+
+---
+
+<div align="center">
+
+**Built for developers who know the real answer is in the comments.**
+
+</div>

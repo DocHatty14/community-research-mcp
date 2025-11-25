@@ -1767,6 +1767,86 @@ def _is_preferred_domain(domain: str) -> bool:
     return any(domain.endswith(d) or d in domain for d in PREFERRED_DOMAINS)
 
 
+def _extract_issue_from_content(title: str, snippet: str, query: str) -> str:
+    """
+    IMPROVEMENT 2: Extract a meaningful issue description from content.
+
+    Instead of just "Not specified" or copying the title, try to identify
+    the actual problem being discussed.
+    """
+    content = f"{title} {snippet}".lower()
+
+    # Problem indicator patterns
+    problem_patterns = [
+        r"(?:error|issue|problem|bug|fail(?:s|ed|ing)?)[:\s]+([^.!?\n]{20,100})",
+        r"(?:can'?t|cannot|unable to|doesn'?t work)[:\s]*([^.!?\n]{15,100})",
+        r"(?:how (?:to|do|can) (?:i|we|you))[:\s]*([^.!?\n]{15,100})",
+        r"(?:why (?:is|does|do|are))[:\s]*([^.!?\n]{15,100})",
+    ]
+
+    for pattern in problem_patterns:
+        match = re.search(pattern, content, re.IGNORECASE)
+        if match:
+            issue = match.group(1).strip()
+            if len(issue) > 20:
+                return issue[:150].capitalize()
+
+    # Fall back to extracting from title if it looks like a question/issue
+    title_lower = title.lower()
+    if any(
+        w in title_lower
+        for w in ["error", "issue", "problem", "fail", "not working", "how to", "why"]
+    ):
+        # Clean up the title
+        clean_title = re.sub(
+            r"\s*[-|·]\s*(Stack Overflow|GitHub|Reddit|Medium).*$",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        )
+        return f"Related to: {clean_title[:100]}"
+
+    # Last resort: use query context
+    return f"Related to: {query[:80]}"
+
+
+def _extract_solution_from_content(snippet: str, title: str) -> str:
+    """
+    IMPROVEMENT 2: Extract a meaningful solution from content.
+
+    Look for solution indicators and actual fix descriptions rather than
+    just copying the entire snippet.
+    """
+    # Solution indicator patterns
+    solution_patterns = [
+        r"(?:solution|fix|answer|resolved|solved)[:\s]+([^.!?\n]{20,200})",
+        r"(?:you (?:can|should|need to)|try|use)[:\s]+([^.!?\n]{20,150})",
+        r"(?:the (?:fix|solution|answer|trick) (?:is|was))[:\s]+([^.!?\n]{20,150})",
+        r"(?:this worked|finally got it|figured out)[:\s]*([^.!?\n]{20,150})",
+    ]
+
+    for pattern in solution_patterns:
+        match = re.search(pattern, snippet, re.IGNORECASE)
+        if match:
+            solution = match.group(1).strip()
+            if len(solution) > 25:
+                return solution[:300]
+
+    # If snippet has code blocks, that's likely the solution
+    if "```" in snippet or "`" in snippet:
+        # Return snippet with code as solution
+        return snippet[:400]
+
+    # Fall back to first meaningful sentence
+    sentences = re.split(r"[.!?]\s+", snippet)
+    for sentence in sentences:
+        if len(sentence) > 30 and not sentence.lower().startswith(("i ", "we ", "my ")):
+            return sentence[:300]
+
+    # Last resort: truncated snippet
+    return snippet[:300] if snippet else "See linked source for details."
+
+
 def get_weighted_score(item: Dict[str, Any], source: str) -> float:
     """Calculate weighted score based on source priority and engagement."""
     source_weight = CONFIG.get("sources", {}).get(source, {}).get("weight", 5)
@@ -1983,6 +2063,78 @@ async def synthesize_with_llm(
     # Convert raw search results into structured findings format
     findings = []
 
+    # IMPROVEMENT 1: Build stronger query term matching
+    # Include goal terms for better relevance matching
+    goal_str = goal or ""
+    full_query = f"{language} {query} {goal_str}".lower()
+    query_terms = set(re.findall(r"\w+", full_query))
+    stop_words = {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "as",
+        "is",
+        "it",
+        "be",
+        "are",
+        "was",
+        "were",
+        "how",
+        "what",
+        "why",
+        "when",
+        "where",
+        "which",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "you",
+        "we",
+        "they",
+        "my",
+        "your",
+        "our",
+        "their",
+        "can",
+        "will",
+        "would",
+        "should",
+        "could",
+        "may",
+        "might",
+        "must",
+        "do",
+        "does",
+        "did",
+        "have",
+        "has",
+        "had",
+        "get",
+        "set",
+        "use",
+        "using",
+        "want",
+        "need",
+    }
+    query_terms = query_terms - stop_words
+
+    # Extract key topic terms (longer words are usually more specific)
+    key_terms = {t for t in query_terms if len(t) >= 4}
+
     for source_name, items in search_results.items():
         if source_name.startswith("_"):  # Skip metadata keys like _meta
             continue
@@ -1990,11 +2142,29 @@ async def synthesize_with_llm(
         for item in items[:10]:  # Limit to top 10 per source
             snippet = item.get("snippet", "")[:500]
             title = item.get("title", "")
+            content = f"{title} {snippet}".lower()
+            content_terms = set(re.findall(r"\w+", content))
 
-            # Extract basic structure from snippet for quality scoring
-            # This is a simple heuristic-based extraction, not LLM synthesis
-            issue = "Not specified"
-            solution = snippet  # Use snippet as solution fallback
+            # IMPROVEMENT 1: Calculate relevance with key term weighting
+            all_matches = query_terms.intersection(content_terms)
+            key_matches = key_terms.intersection(content_terms)
+
+            # Key terms (4+ chars) matter more than common terms
+            relevance_score = (
+                (len(key_matches) / max(len(key_terms), 1))
+                * 70  # 70% weight on key terms
+                + (len(all_matches) / max(len(query_terms), 1))
+                * 30  # 30% weight on all terms
+            )
+
+            # NOTE: We intentionally do NOT filter out low-relevance results here.
+            # The LLM consuming this data is smart enough to identify what's useful.
+            # Over-filtering on the server side loses potentially valuable edge cases.
+            # Instead, we sort by relevance so best matches appear first.
+
+            # IMPROVEMENT 2: Smart issue/solution extraction from snippet
+            issue = _extract_issue_from_content(title, snippet, query)
+            solution = _extract_solution_from_content(snippet, title)
             code = ""
 
             # Try to extract code blocks from snippet
@@ -2004,46 +2174,19 @@ async def synthesize_with_llm(
             if code_matches:
                 code = "\n".join([m[0] or m[1] for m in code_matches])
 
-            # Calculate relevance score based on topic overlap
-            query_terms = set(re.findall(r"\w+", f"{language} {query}".lower()))
-            stop_words = {
-                "the",
-                "a",
-                "an",
-                "and",
-                "or",
-                "but",
-                "in",
-                "on",
-                "at",
-                "to",
-                "for",
-                "of",
-                "with",
-                "by",
-                "from",
-                "as",
-                "is",
-                "it",
-                "be",
-                "are",
-                "was",
-                "were",
-            }
-            query_terms = query_terms - stop_words
-
-            content = f"{title} {snippet}".lower()
-            content_terms = set(re.findall(r"\w+", content))
-            matches = query_terms.intersection(content_terms)
-            relevance_score = len(matches) / max(len(query_terms), 1) * 100
+            # Quality score - keep it informational, not punitive
+            # The LLM can use relevance_score to judge usefulness
+            base_score = (
+                item.get("quality_score", 0)
+                if item.get("quality_score", 0) > 0
+                else item.get("score", 0)
+            )
 
             finding = {
                 "title": title[:100],
                 "source": source_name,
                 "url": item.get("url", ""),
-                "score": item.get("quality_score", 0)
-                if item.get("quality_score", 0) > 0
-                else item.get("score", 0),
+                "score": base_score,  # Original score, no penalties
                 "date": item.get("date", "unknown"),
                 "votes": item.get("votes", 0)
                 or item.get("stars", 0)
@@ -2060,8 +2203,11 @@ async def synthesize_with_llm(
             }
             findings.append(finding)
 
-    # Sort findings by relevance score (descending) to put most relevant first
-    findings.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    # Sort findings by combined relevance and quality score
+    findings.sort(
+        key=lambda x: (x.get("relevance_score", 0) * 0.6 + x.get("score", 0) * 0.4),
+        reverse=True,
+    )
 
     # Return structured data for the calling LLM to synthesize
     return {
@@ -2225,149 +2371,225 @@ def render_masterclass_markdown(
     search_meta: Dict[str, Any],
     manual_mode: bool = False,
 ) -> str:
-    """Render final markdown using the masterclass template."""
+    """Render final markdown using an elegant, sophisticated template."""
     findings = payload.get("findings", [])
     conflicts = payload.get("conflicts", []) + conflicts_auto
     recommended_path = payload.get("recommended_path", [])
     quick_apply = payload.get("quick_apply") or {}
     verification = payload.get("verification") or []
-    assumptions = payload.get("assumptions") or []
+    total = search_meta.get("total_results", 0)
+    sources_count = search_meta.get("source_count", 0)
 
     lines: List[str] = []
-    lines.append(f"# Community Research: {topic}")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # HEADER - Clean title with metadata table
+    # ═══════════════════════════════════════════════════════════════════════
+    lines.append(f"# {topic}")
     lines.append("")
-    lines.append("## 📋 How to Use These Results")
-    lines.append("")
-    lines.append("**Quality Scores:** Each finding has a score (0-100):")
+    lines.append("| | |")
+    lines.append("|:--|:--|")
+    lines.append(f"| **Language** | {language} |")
+    if goal:
+        lines.append(f"| **Goal** | {goal[:80]} |")
+    if current_setup:
+        lines.append(f"| **Stack** | {current_setup[:60]} |")
+    evidence_icon = "✓ Strong" if not search_meta.get("evidence_weak") else "○ Limited"
     lines.append(
-        "- **80-100**: Highly reliable (maintainer-backed, well-evidenced, recent)"
-    )
-    lines.append("- **60-79**: Good quality (community-validated, has code examples)")
-    lines.append("- **40-59**: Moderate (some evidence, may need verification)")
-    lines.append("- **<40**: Weak (limited evidence, outdated, or speculative)")
-    lines.append("")
-    lines.append("**Next Steps:**")
-    lines.append("1. Review findings starting with highest scores")
-    lines.append("2. Check conflicts section for edge cases")
-    lines.append("3. Follow recommended path for implementation")
-    lines.append("4. Copy quick-apply code as starting point (review before running)")
-    lines.append("5. Validate using verification steps")
-    lines.append("")
-    evidence_strength = "⚠️ WEAK" if search_meta.get("evidence_weak") else "✅ STRONG"
-    lines.append(
-        f"**Search Quality:** {evidence_strength} evidence from {search_meta.get('total_results', 0)} results across {search_meta.get('source_count', 0)} sources"
+        f"| **Evidence** | {total} results · {sources_count} sources · {evidence_icon} |"
     )
     lines.append("")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # SUMMARY - Quick takeaway
+    # ═══════════════════════════════════════════════════════════════════════
+    if findings:
+        top = findings[0]
+        summary = top.get("solution", "")
+        if summary:
+            clean = re.sub(
+                r"<[^>]+>", "", summary.replace("\\n", " ").replace("&#x27;", "'")
+            )
+            clean = re.sub(r"\s+", " ", clean).strip()[:180]
+            lines.append(f"> **Quick Answer:** {clean}...")
+            lines.append("")
+
     lines.append("---")
     lines.append("")
-    lines.append(f"## 🎯 Research Context")
-    lines.append(f"- **Goal:** {goal or 'Not provided'}")
-    context_bits = [language]
-    if current_setup:
-        context_bits.append(current_setup)
-    lines.append(f"- **Context:** {', '.join(context_bits)}")
-    lines.append("")
 
-    lines.append("## Findings (ranked)")
+    # ═══════════════════════════════════════════════════════════════════════
+    # FINDINGS - Grouped by quality tier with visual score bars
+    # ═══════════════════════════════════════════════════════════════════════
     if not findings:
-        lines.append("- No findings available; broaden the query or add goal/context.")
+        lines.append("*No relevant findings. Try a more specific query.*")
+        lines.append("")
     else:
-        for idx, f in enumerate(findings, 1):
-            source_label = f.get("source", "Source")
-            # Use quality_score if available, fallback to score
-            score = f.get("quality_score", f.get("score", "N/A"))
-            date = f.get("date", "unknown")
-            votes = f.get("votes") or f.get("community_score") or "n/a"
-            lines.append(
-                f"{idx}) {source_label} (Score: {score}, Date: {date}, Votes/Stars: {votes})"
-            )
-            # Use snippet as solution if solution is "Not specified"
-            issue = f.get("issue", "See details in evidence link")
-            solution = f.get(
-                "solution", f.get("snippet", "See evidence link for details")
-            )
-            if issue == "Not specified":
-                issue = f"Related to: {f.get('title', 'Unknown')}"
-            lines.append(f"   - Issue: {issue}")
-            lines.append(
-                f"   - Solution: {solution[:300]}{'...' if len(solution) > 300 else ''}"
-            )
-            evidence_list = f.get("evidence") or []
-            if evidence_list:
-                ev = evidence_list[0]
-                quote = str(ev.get("quote", "")).replace("\n", " ").strip()
-                lines.append(
-                    f'   - Evidence: {ev.get("url", "")} - "{quote[:200] or "See source"}"'
-                )
-            elif f.get("url"):
-                lines.append(f"   - Evidence: {f.get('url')}")
-            code_block = f.get("code")
-            if code_block:
-                code_lang = language.lower()
+        # Split into quality tiers
+        top_tier = [
+            f for f in findings if f.get("quality_score", f.get("score", 0)) >= 70
+        ]
+        mid_tier = [
+            f for f in findings if 40 <= f.get("quality_score", f.get("score", 0)) < 70
+        ]
+
+        def format_finding(f: Dict[str, Any], num: int) -> List[str]:
+            """Format a single finding elegantly."""
+            card: List[str] = []
+            score = f.get("quality_score", f.get("score", 0))
+            relevance = f.get("relevance_score", 0)
+            source = f.get("source", "web").replace("_", " ").title()
+            url = f.get("url", "")
+            title = f.get("title", "Untitled")
+
+            # Clean title
+            title = re.sub(
+                r"\s*[-|·]\s*(Stack Overflow|GitHub|Reddit|Medium|DEV).*$",
+                "",
+                title,
+                flags=re.IGNORECASE,
+            )[:70]
+
+            # Visual score bar
+            filled = min(10, int(score / 10))
+            bar = "█" * filled + "░" * (10 - filled)
+
+            card.append(f"### {num}. {title}")
+            card.append("")
+            card.append(f"`{bar}` **{score}** · {source} · {relevance}% relevant")
+
+            if url:
+                domain = re.search(r"https?://(?:www\.)?([^/]+)", url)
+                domain_str = domain.group(1)[:30] if domain else "source"
+                card.append(f"")
+                card.append(f"[↗ {domain_str}]({url})")
+
+            card.append("")
+
+            # Problem if meaningful
+            issue = f.get("issue", "")
+            if (
+                issue
+                and not issue.startswith("Related to:")
+                and issue != "Not specified"
+            ):
+                clean_issue = re.sub(r"<[^>]+>", "", issue.replace("\\n", " "))[:120]
+                card.append(f"> 💡 **Issue:** {clean_issue}")
+                card.append("")
+
+            # Solution
+            solution = f.get("solution", "")
+            if solution:
+                clean_sol = solution.replace("\\n", "\n").replace("&#x27;", "'")
+                clean_sol = re.sub(r"<[^>]+>", "", clean_sol)
+                clean_sol = re.sub(r"\s+", " ", clean_sol).strip()[:300]
+                card.append(f"**Solution:** {clean_sol}")
+                card.append("")
+
+            # Code in collapsible
+            code = f.get("code", "")
+            if code and len(code) > 15:
+                clean_code = code.replace("\\n", "\n").strip()
+                if "\n" in clean_code or len(clean_code) > 30:
+                    lang = language.lower() if language else "text"
+                    card.append("<details><summary>📄 View Code</summary>")
+                    card.append("")
+                    card.append(f"```{lang}")
+                    card.append(clean_code[:400])
+                    card.append("```")
+                    card.append("</details>")
+                    card.append("")
+
+            return card
+
+        # Render top tier - show more results, let LLM filter
+        if top_tier:
+            lines.append("## ⭐ Best Matches")
+            lines.append("")
+            for i, f in enumerate(top_tier[:8], 1):  # Up to 8 top results
+                lines.extend(format_finding(f, i))
+                lines.append("---")
                 lines.append("")
-                lines.append(f"```{code_lang}\n{code_block}\n```")
+
+        # Render mid tier
+        if mid_tier:
+            start = len(top_tier[:8]) + 1
+            lines.append("## More Results")
+            lines.append("")
+            for i, f in enumerate(mid_tier[:8], start):  # Up to 8 more results
+                lines.extend(format_finding(f, i))
+                lines.append("---")
                 lines.append("")
-    lines.append("")
 
-    lines.append("## Conflicts & Edge Cases")
-    if conflicts:
-        for c in conflicts:
-            lines.append(
-                f"- {c.get('description', 'Conflict')} - {c.get('recommended_action', 'Resolve carefully.')}"
-            )
-    else:
-        lines.append("- None detected; still validate against your stack.")
-    lines.append("")
-
-    lines.append("## Recommended Path")
-    if recommended_path:
-        for i, step in enumerate(recommended_path, 1):
-            lines.append(f"{i}. {step.get('step', 'Step')} - {step.get('why', '')}")
-    else:
-        lines.append("- Apply the top finding and rerun verification.")
-    lines.append("")
-
-    lines.append("## Quick-apply Code/Commands")
-    code = quick_apply.get("code")
-    if code:
-        code_lang = (quick_apply.get("language") or language).lower()
-        lines.append(f"```{code_lang}\n{code}\n```")
+    # ═══════════════════════════════════════════════════════════════════════
+    # QUICK APPLY - Copy-paste ready code
+    # ═══════════════════════════════════════════════════════════════════════
+    has_code = any(
+        f.get("code") and len(str(f.get("code", ""))) > 20 for f in findings[:5]
+    )
+    quick_code = quick_apply.get("code")
     commands = quick_apply.get("commands") or []
-    for cmd in commands:
-        lines.append(f"- {cmd}")
-    if not code and not commands:
-        lines.append("- Not available from sources.")
-    lines.append("")
 
-    lines.append("## Verification")
-    for check in verification:
-        lines.append(f"- {check}")
-    if not verification:
-        lines.append("- Add tests/commands to validate changes.")
-    lines.append("")
-
-    if assumptions:
-        lines.append("## Assumptions")
-        for a in assumptions:
-            lines.append(f"- {a}")
+    if quick_code or has_code or commands:
+        lines.append("## 📋 Quick Apply")
+        lines.append("")
+        if quick_code:
+            clean = quick_code.replace("\\n", "\n").strip()
+            lang = (quick_apply.get("language") or language or "text").lower()
+            lines.append(f"```{lang}")
+            lines.append(clean[:500])
+            lines.append("```")
+        elif has_code:
+            for f in findings[:5]:
+                code = f.get("code", "")
+                if code and len(code) > 20:
+                    clean = code.replace("\\n", "\n").strip()
+                    lines.append(f"```{language.lower() if language else 'text'}")
+                    lines.append(clean[:500])
+                    lines.append("```")
+                    break
+        if commands:
+            lines.append("")
+            lines.append("```bash")
+            for cmd in commands[:3]:
+                lines.append(cmd)
+            lines.append("```")
         lines.append("")
 
-    lines.append("## Search Stats")
-    if manual_mode:
-        lines.append("- Sources: manual evidence pack")
-        lines.append(
-            f"- Results found: {len(payload.get('findings', []))} curated entries"
-        )
-    else:
-        lines.append(
-            f"- Sources queried: {search_meta.get('source_count', 0)} ({', '.join(search_meta.get('sources', []))})"
-        )
-        lines.append(f"- Results found: {search_meta.get('total_results', 0)}")
-        if search_meta.get("evidence_weak"):
-            lines.append("- Evidence: weak (fewer than 2 strong sources).")
-    lines.append(f"- Enriched query: {search_meta.get('enriched_query', 'n/a')}")
+    # ═══════════════════════════════════════════════════════════════════════
+    # WARNINGS - Gotchas & edge cases
+    # ═══════════════════════════════════════════════════════════════════════
+    if conflicts:
+        lines.append("## ⚠️ Watch Out")
+        lines.append("")
+        for c in conflicts[:3]:
+            desc = c.get("description", "") if isinstance(c, dict) else str(c)
+            if desc:
+                lines.append(f"- {desc[:100]}")
+        lines.append("")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # NEXT STEPS - Actionable checklist
+    # ═══════════════════════════════════════════════════════════════════════
+    if recommended_path:
+        lines.append("## ✅ Next Steps")
+        lines.append("")
+        for step in recommended_path[:4]:
+            if isinstance(step, dict):
+                text = step.get("step", str(step))
+            else:
+                text = str(step)
+            text = re.sub(r"^Apply recommendation #\d+:\s*", "", text)[:80]
+            if len(text) > 10:
+                lines.append(f"- [ ] {text}")
+        lines.append("")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # FOOTER - Minimal, informative
+    # ═══════════════════════════════════════════════════════════════════════
+    lines.append("---")
+    lines.append("")
     lines.append(
-        f"- Expanded queries (for follow-up): {', '.join(search_meta.get('expanded_queries', [])[:3])}"
+        f"*Found **{len(findings)}** solutions from {total} results · Score: `██████████` = 100*"
     )
 
     return "\n".join(lines)
