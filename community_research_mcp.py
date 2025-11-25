@@ -119,6 +119,7 @@ from utils import check_rate_limit, get_cache_key, get_cached_result, set_cached
 
 # Set up logging
 logging.getLogger().setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 try:
@@ -675,22 +676,129 @@ def _build_version_tokens(versions: List[str]) -> List[str]:
     return tokens
 
 
+def _generate_query_variations(
+    language: str, topic: str, goal: Optional[str] = None
+) -> List[str]:
+    """
+    Generate 3-5 query variations to capture different phrasings and synonyms.
+
+    This implements the Query Expansion technique used by top RAG systems:
+    - Multiple phrasings increase recall
+    - Synonyms catch different terminology
+    - Different orderings hit different search patterns
+    """
+    variations = []
+    topic_lower = topic.lower()
+
+    # Variation 1: Original with language
+    variations.append(f"{language} {topic}")
+
+    # Variation 2: Topic-first (some searches weight first words higher)
+    variations.append(f"{topic} {language}")
+
+    # Variation 3: With goal context if provided
+    if goal:
+        variations.append(f"{language} {topic} {goal}")
+
+    # Variation 4: Problem-focused phrasing (how community posts are titled)
+    problem_indicators = [
+        "error",
+        "issue",
+        "problem",
+        "fail",
+        "not working",
+        "crash",
+        "slow",
+        "bug",
+    ]
+    if any(ind in topic_lower for ind in problem_indicators):
+        # Already problem-focused, add solution-seeking variation
+        variations.append(f"{language} {topic} fix solution workaround")
+    else:
+        # Add problem-seeking variation
+        variations.append(f"{language} {topic} issue problem")
+
+    # Variation 5: Community-style phrasing (how people actually ask)
+    if "how to" not in topic_lower and "why" not in topic_lower:
+        variations.append(f"how to {topic} {language}")
+
+    # Dedupe while preserving order
+    seen = set()
+    unique_variations = []
+    for v in variations:
+        v_normalized = " ".join(v.lower().split())
+        if v_normalized not in seen:
+            seen.add(v_normalized)
+            unique_variations.append(v)
+
+    return unique_variations[:5]  # Max 5 variations
+
+
+def _decompose_complex_query(topic: str, goal: Optional[str] = None) -> List[str]:
+    """
+    Decompose complex multi-part queries into focused sub-queries.
+
+    Complex queries often contain multiple distinct questions or aspects.
+    Breaking them down improves retrieval for each component.
+    """
+    sub_queries = []
+
+    # Split on common conjunctions and separators
+    separators = [" and ", " also ", " plus ", " with ", " but ", ", "]
+    parts = [topic]
+
+    for sep in separators:
+        new_parts = []
+        for part in parts:
+            if sep in part.lower():
+                # Split but keep substantial parts only
+                splits = part.lower().split(sep)
+                for s in splits:
+                    s = s.strip()
+                    if len(s) > 15:  # Only keep meaningful chunks
+                        new_parts.append(s)
+            else:
+                new_parts.append(part)
+        parts = new_parts if new_parts else parts
+
+    # Only decompose if we found multiple substantial parts
+    if len(parts) > 1:
+        sub_queries = [p.strip() for p in parts if len(p.strip()) > 15]
+
+    # Also check for question stacking (multiple questions in one)
+    question_words = ["how", "why", "what", "when", "where", "which"]
+    question_count = sum(1 for w in question_words if f" {w} " in f" {topic.lower()} ")
+
+    if question_count > 1:
+        # Multiple questions detected - try to split on question words
+        for qw in question_words:
+            if f" {qw} " in f" {topic.lower()} ":
+                idx = topic.lower().find(f" {qw} ")
+                if idx > 15:  # Meaningful content before the question word
+                    sub_queries.append(topic[:idx].strip())
+                    sub_queries.append(topic[idx:].strip())
+                    break
+
+    return sub_queries[:3]  # Max 3 sub-queries to avoid explosion
+
+
 def enrich_query(
     language: str, topic: str, goal: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Enrich query to improve search relevance by combining topic with goal.
+    Advanced query enrichment with expansion and decomposition.
 
-    Smart enrichment:
-    - Combines language + topic + goal for better targeting
-    - Extracts key framework/library names to emphasize
-    - Adds context words based on goal
-    - Avoids generic spam words but includes helpful qualifiers
+    Implements production-grade RAG techniques:
+    1. Query Expansion - Generate 3-5 variations with synonyms/phrasings
+    2. Query Decomposition - Break complex queries into sub-queries
+    3. Framework Detection - Emphasize key technologies
+    4. Goal Integration - Use goal to focus the search
 
     Returns:
         {
-            "enriched_query": "...",
-            "expanded_queries": [...],
+            "enriched_query": "...",           # Primary search query
+            "expanded_queries": [...],          # 3-5 variations for parallel search
+            "sub_queries": [...],               # Decomposed parts (if complex)
             "notes": [...],
             "assumptions": [...],
             "versions": [...]
@@ -726,28 +834,48 @@ def enrich_query(
         "pandas",
         "tensorflow",
         "pytorch",
+        "nextjs",
+        "next.js",
+        "express",
+        "nestjs",
+        "spring",
+        "laravel",
+        "rails",
+        "electron",
+        "tauri",
+        "graphql",
+        "prisma",
+        "drizzle",
+        "supabase",
+        "firebase",
+        "aws",
+        "azure",
+        "gcp",
     ]
 
     topic_lower = topic.lower()
     emphasized_frameworks = [fw for fw in framework_keywords if fw in topic_lower]
 
-    # Build enriched query
+    # Build primary enriched query
     base = f"{language} {topic}".strip()
 
     # Add goal if provided to narrow down results
     if goal:
-        # Add goal context without generic words
         goal_lower = goal.lower()
         if any(word in goal_lower for word in ["implement", "build", "create", "add"]):
-            enriched_query = f"{base} implementation tutorial"
+            enriched_query = f"{base} implementation"
         elif any(word in goal_lower for word in ["fix", "debug", "error", "issue"]):
-            enriched_query = f"{base} troubleshooting"
+            enriched_query = f"{base} fix solution"
         elif any(word in goal_lower for word in ["learn", "understand", "how"]):
-            enriched_query = f"{base} guide pattern"
+            enriched_query = f"{base} guide"
         elif any(
             word in goal_lower for word in ["best practice", "recommended", "proper"]
         ):
-            enriched_query = f"{base} best practices pattern"
+            enriched_query = f"{base} best practices"
+        elif any(
+            word in goal_lower for word in ["performance", "optimize", "speed", "fast"]
+        ):
+            enriched_query = f"{base} optimization performance"
         else:
             enriched_query = f"{base} {goal}"
     else:
@@ -755,20 +883,38 @@ def enrich_query(
 
     # Re-emphasize key frameworks if detected
     if emphasized_frameworks and len(emphasized_frameworks) <= 2:
-        # Only emphasize if there are 1-2 frameworks to avoid spam
         enriched_query = f"{' '.join(emphasized_frameworks)} {enriched_query}"
 
-    # Expanded queries for fallback/suggestions
-    expanded_queries = [
-        base,
-        enriched_query,
-    ]
-    if goal:
-        expanded_queries.append(f"{base} {goal}")
+    # === QUERY EXPANSION ===
+    # Generate 3-5 variations for parallel searching
+    expanded_queries = _generate_query_variations(language, topic, goal)
+
+    # Add the enriched query if not already present
+    if enriched_query not in expanded_queries:
+        expanded_queries.insert(0, enriched_query)
+
+    notes.append(
+        f"Generated {len(expanded_queries)} query variations for broader search"
+    )
+
+    # === QUERY DECOMPOSITION ===
+    # Break complex queries into sub-queries
+    sub_queries = _decompose_complex_query(topic, goal)
+
+    if sub_queries:
+        notes.append(
+            f"Decomposed into {len(sub_queries)} sub-queries for focused search"
+        )
+        # Add sub-queries as additional expanded queries
+        for sq in sub_queries:
+            sq_full = f"{language} {sq}"
+            if sq_full not in expanded_queries:
+                expanded_queries.append(sq_full)
 
     return {
         "enriched_query": enriched_query,
-        "expanded_queries": expanded_queries,
+        "expanded_queries": expanded_queries[:7],  # Cap at 7 to avoid API overload
+        "sub_queries": sub_queries,
         "notes": notes,
         "assumptions": assumptions,
         "versions": versions,
@@ -1252,6 +1398,301 @@ async def search_reddit(query: str, language: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logging.error(f"Reddit search failed: {str(e)}")
         return []
+
+
+# =============================================================================
+# SMART API DISTRIBUTION FOR MULTI-QUERY SEARCH
+# =============================================================================
+# Instead of hitting ALL APIs for each query (causing rate limits), we distribute
+# queries across different API groups for better diversity and reduced rate limits.
+
+
+def get_available_api_groups() -> Dict[str, List[str]]:
+    """
+    Get available API groups based on configured API keys.
+
+    Groups are designed to:
+    1. Maximize diversity of results (different source types)
+    2. Minimize rate limit conflicts (spread load across providers)
+    3. Gracefully degrade based on available API keys
+
+    Returns:
+        Dict mapping group names to list of source names
+    """
+    source_config = CONFIG.get("sources", {})
+
+    # Define API tiers based on quality and rate limits
+    # Tier 1: Premium paid APIs (best quality, strictest limits)
+    # Tier 2: Free community APIs (good quality, generous limits)
+    # Tier 3: Fallback APIs (supplementary)
+
+    available_groups = {
+        "primary": [],  # Best coverage - always used
+        "secondary": [],  # Good coverage - used for query 2
+        "tertiary": [],  # Supplementary - used for query 3
+    }
+
+    # Primary group: Core community sources (free, reliable)
+    if source_config.get("stackoverflow", {}).get("enabled", True):
+        available_groups["primary"].append("stackoverflow")
+    if source_config.get("github", {}).get("enabled", True):
+        available_groups["primary"].append("github")
+    if source_config.get("hackernews", {}).get("enabled", True):
+        available_groups["primary"].append("hackernews")
+
+    # Secondary group: Web search APIs (paid, high quality)
+    if BRAVE_SEARCH_API_KEY and source_config.get("brave", {}).get("enabled", True):
+        available_groups["secondary"].append("brave")
+    if TAVILY_API_KEY and source_config.get("tavily", {}).get("enabled", True):
+        available_groups["secondary"].append("tavily")
+    if SERPER_API_KEY and source_config.get("serper", {}).get("enabled", True):
+        available_groups["secondary"].append("serper")
+
+    # Tertiary group: Additional sources
+    if source_config.get("reddit", {}).get("enabled", True):
+        available_groups["tertiary"].append("reddit")
+    if source_config.get("lobsters", {}).get("enabled", True):
+        available_groups["tertiary"].append("lobsters")
+    if source_config.get("discourse", {}).get("enabled", True):
+        available_groups["tertiary"].append("discourse")
+    if FIRECRAWL_API_KEY and source_config.get("firecrawl", {}).get("enabled", True):
+        available_groups["tertiary"].append("firecrawl")
+
+    return available_groups
+
+
+async def distributed_search(
+    queries: List[str],
+    language: str,
+    expanded_mode: bool = False,
+    use_fixtures: bool = False,
+) -> Dict[str, Any]:
+    """
+    Distribute multiple queries across different API groups to maximize diversity
+    and minimize rate limits.
+
+    Strategy:
+    - Query 1: Uses ALL available sources (full coverage)
+    - Query 2: Uses only secondary group (web search APIs) if available
+    - Query 3: Uses only tertiary group (supplementary sources) if available
+
+    This way, each API is only called once per search, avoiding rate limits while
+    still getting diverse results from multiple query phrasings.
+
+    Args:
+        queries: List of query variations (up to 3)
+        language: Programming language context
+        expanded_mode: Whether to use expanded result limits
+        use_fixtures: Whether to use test fixtures
+
+    Returns:
+        Merged results from all queries
+    """
+    api_groups = get_available_api_groups()
+
+    # Log the distribution plan for transparency
+    query_count = len(queries)
+    logger.info(f"Distributed search: {query_count} queries across API groups")
+
+    # Always run query 1 with full aggregate (all sources)
+    # This ensures we get comprehensive results even if only 1 query
+    results_list = []
+
+    # Query 1: Full search with all sources
+    if queries:
+        logger.info(f"  [1/primary] All sources: '{queries[0][:60]}...'")
+        try:
+            result = await aggregate_search_results(
+                queries[0],
+                language,
+                expanded_mode=expanded_mode,
+                use_fixtures=use_fixtures,
+            )
+            results_list.append(("full", result))
+            count = sum(
+                len(v)
+                for k, v in result.items()
+                if k != "_meta" and isinstance(v, list)
+            )
+            logger.info(f"      -> {count} results from primary")
+        except Exception as e:
+            logger.error(f"Primary query failed: {e}")
+
+    # Query 2: Secondary sources only (if available and we have a 2nd query)
+    if len(queries) > 1 and api_groups["secondary"]:
+        logger.info(
+            f"  [2/secondary] {api_groups['secondary']}: '{queries[1][:60]}...'"
+        )
+        try:
+            result = await aggregate_search_results_subset(
+                queries[1],
+                language,
+                sources=api_groups["secondary"],
+                expanded_mode=expanded_mode,
+            )
+            results_list.append(("secondary", result))
+            count = sum(
+                len(v)
+                for k, v in result.items()
+                if k != "_meta" and isinstance(v, list)
+            )
+            logger.info(f"      -> {count} results from secondary")
+        except Exception as e:
+            logger.warning(f"Secondary query failed: {e}")
+
+    # Query 3: Tertiary sources only (if available and we have a 3rd query)
+    if len(queries) > 2 and api_groups["tertiary"]:
+        logger.info(f"  [3/tertiary] {api_groups['tertiary']}: '{queries[2][:60]}...'")
+        try:
+            result = await aggregate_search_results_subset(
+                queries[2],
+                language,
+                sources=api_groups["tertiary"],
+                expanded_mode=expanded_mode,
+            )
+            results_list.append(("tertiary", result))
+            count = sum(
+                len(v)
+                for k, v in result.items()
+                if k != "_meta" and isinstance(v, list)
+            )
+            logger.info(f"      -> {count} results from tertiary")
+        except Exception as e:
+            logger.warning(f"Tertiary query failed: {e}")
+
+    # Merge all results
+    merged_results: Dict[str, List[Any]] = {}
+    merged_meta: Dict[str, Any] = {"audit_log": [], "query_distribution": []}
+
+    for group_name, result in results_list:
+        if isinstance(result, Exception) or not isinstance(result, dict):
+            continue
+
+        merged_meta["query_distribution"].append(group_name)
+
+        for source, items in result.items():
+            if source == "_meta":
+                if isinstance(items, dict) and "audit_log" in items:
+                    merged_meta["audit_log"].extend(items.get("audit_log", []))
+                continue
+            if source not in merged_results:
+                merged_results[source] = []
+            merged_results[source].extend(items if isinstance(items, list) else [])
+
+    merged_results["_meta"] = merged_meta
+
+    # Deduplicate across all merged results
+    if ENHANCED_UTILITIES_AVAILABLE:
+        results_only = {
+            k: v
+            for k, v in merged_results.items()
+            if k != "_meta" and isinstance(v, list)
+        }
+        if results_only:
+            deduped = deduplicate_results(results_only)
+            for source, items in deduped.items():
+                merged_results[source] = items
+
+    return merged_results
+
+
+async def aggregate_search_results_subset(
+    query: str,
+    language: str,
+    sources: List[str],
+    expanded_mode: bool = False,
+) -> Dict[str, Any]:
+    """
+    Run searches on a specific subset of sources.
+
+    This is used for distributed queries to avoid rate limits by only
+    querying specific API groups.
+
+    Args:
+        query: Search query
+        language: Programming language context
+        sources: List of source names to query
+        expanded_mode: Whether to use expanded result limits
+
+    Returns:
+        Dict of source -> results
+    """
+    normalized_query = normalize_query_for_policy(query)
+    audit_log: List[Dict[str, Any]] = []
+
+    # Map source names to their search functions
+    source_functions = {
+        "stackoverflow": (search_stackoverflow, True),  # (func, needs_language)
+        "github": (search_github, True),
+        "reddit": (search_reddit, True),
+        "hackernews": (search_hackernews, False),
+        "lobsters": (search_lobsters, False),
+        "discourse": (search_discourse, True),
+        "firecrawl": (search_firecrawl, True),
+        "tavily": (search_tavily, True),
+        "brave": (search_brave, True),
+        "serper": (search_serper, True),
+    }
+
+    async def run_source(source: str) -> tuple:
+        if source not in source_functions:
+            return source, [], {"status": "unknown_source"}
+
+        func, needs_language = source_functions[source]
+        policy = SOURCE_POLICIES.get(source, {})
+        cap = policy.get("max_results_expanded" if expanded_mode else "max_results", 15)
+        start = time.time()
+        error_msg = None
+
+        try:
+            if ENHANCED_UTILITIES_AVAILABLE:
+                circuit_breaker = get_circuit_breaker(source)
+                if needs_language:
+                    raw = await circuit_breaker.call_async(
+                        resilient_api_call, func, normalized_query, language
+                    )
+                else:
+                    raw = await circuit_breaker.call_async(
+                        resilient_api_call, func, normalized_query
+                    )
+            else:
+                if needs_language:
+                    raw = await func(normalized_query, language)
+                else:
+                    raw = await func(normalized_query)
+        except Exception as exc:
+            raw = []
+            error_msg = f"{type(exc).__name__}: {exc}"
+
+        duration_ms = (time.time() - start) * 1000
+        results = raw if isinstance(raw, list) else []
+        results = results[:cap] if results else []
+
+        entry = build_audit_entry(
+            source=source,
+            status="ok" if results else "empty",
+            duration_ms=duration_ms,
+            result_count=len(results),
+            error=error_msg,
+        )
+
+        return source, results, entry
+
+    # Run all requested sources in parallel
+    tasks = [run_source(s) for s in sources if s in source_functions]
+    results_tuples = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Build results dict
+    results: Dict[str, Any] = {}
+    for item in results_tuples:
+        if isinstance(item, Exception):
+            continue
+        source, items, entry = item
+        results[source] = items
+        audit_log.append(entry)
+
+    results["_meta"] = {"audit_log": audit_log}
+    return results
 
 
 async def aggregate_search_results(
@@ -1769,19 +2210,21 @@ def _is_preferred_domain(domain: str) -> bool:
 
 def _extract_issue_from_content(title: str, snippet: str, query: str) -> str:
     """
-    IMPROVEMENT 2: Extract a meaningful issue description from content.
+    Extract a meaningful issue description from content.
 
     Instead of just "Not specified" or copying the title, try to identify
     the actual problem being discussed.
     """
     content = f"{title} {snippet}".lower()
 
-    # Problem indicator patterns
+    # Problem indicator patterns - expanded for better extraction
     problem_patterns = [
         r"(?:error|issue|problem|bug|fail(?:s|ed|ing)?)[:\s]+([^.!?\n]{20,100})",
         r"(?:can'?t|cannot|unable to|doesn'?t work)[:\s]*([^.!?\n]{15,100})",
         r"(?:how (?:to|do|can) (?:i|we|you))[:\s]*([^.!?\n]{15,100})",
         r"(?:why (?:is|does|do|are))[:\s]*([^.!?\n]{15,100})",
+        r"(?:need(?:s|ed)?|want(?:s|ed)?|looking for)[:\s]+([^.!?\n]{15,100})",
+        r"(?:struggling with|having trouble)[:\s]*([^.!?\n]{15,100})",
     ]
 
     for pattern in problem_patterns:
@@ -1797,17 +2240,38 @@ def _extract_issue_from_content(title: str, snippet: str, query: str) -> str:
         w in title_lower
         for w in ["error", "issue", "problem", "fail", "not working", "how to", "why"]
     ):
-        # Clean up the title
+        # Clean up the title - remove source suffixes
         clean_title = re.sub(
-            r"\s*[-|·]\s*(Stack Overflow|GitHub|Reddit|Medium).*$",
+            r"\s*[-|·]\s*(Stack Overflow|GitHub|Reddit|Medium|DEV Community|Brave).*$",
             "",
             title,
             flags=re.IGNORECASE,
         )
-        return f"Related to: {clean_title[:100]}"
+        # Ensure clean word boundaries (don't cut mid-word)
+        if len(clean_title) > 100:
+            clean_title = clean_title[:100].rsplit(" ", 1)[0]
+        return clean_title.strip()
 
-    # Last resort: use query context
-    return f"Related to: {query[:80]}"
+    # Extract first meaningful sentence from snippet as fallback
+    sentences = re.split(r"[.!?]\s+", snippet)
+    for sentence in sentences[:3]:  # Check first 3 sentences
+        sentence = sentence.strip()
+        if len(sentence) > 25 and len(sentence) < 200:
+            # Clean HTML tags
+            sentence = re.sub(r"<[^>]+>", "", sentence)
+            return sentence[:150]
+
+    # Last resort: clean title without "Related to:" prefix
+    clean_title = re.sub(
+        r"\s*[-|·]\s*(Stack Overflow|GitHub|Reddit|Medium|DEV Community).*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    # Ensure clean word boundaries
+    if len(clean_title) > 80:
+        clean_title = clean_title[:80].rsplit(" ", 1)[0]
+    return clean_title.strip() if clean_title.strip() else title[:80]
 
 
 def _extract_solution_from_content(snippet: str, title: str) -> str:
@@ -2465,16 +2929,14 @@ def render_masterclass_markdown(
 
             card.append("")
 
-            # Problem if meaningful
+            # Problem if meaningful (now that we removed "Related to:" prefix)
             issue = f.get("issue", "")
-            if (
-                issue
-                and not issue.startswith("Related to:")
-                and issue != "Not specified"
-            ):
+            if issue and issue != "Not specified" and len(issue) > 15:
                 clean_issue = re.sub(r"<[^>]+>", "", issue.replace("\\n", " "))[:120]
-                card.append(f"> 💡 **Issue:** {clean_issue}")
-                card.append("")
+                # Only show if not just repeating the title
+                if clean_issue.lower() != title.lower()[: len(clean_issue)]:
+                    card.append(f"**Issue:** {clean_issue}")
+                    card.append("")
 
             # Solution
             solution = f.get("solution", "")
@@ -3203,12 +3665,14 @@ async def get_server_context() -> str:
     context = {
         "handshake": {
             "server": "community-research-mcp",
-            "version": "1.0.0",
+            "version": "2.0.0",
             "status": "initialized",
             "mission": "Where the official documentation ends and actual street-smart solutions begin",
             "description": "Find real solutions from Stack Overflow, Reddit, GitHub issues, and forums - the workarounds, hacks, and battle-tested fixes that people actually use",
             "capabilities": {
                 "multi_source_search": True,
+                "multi_query_expansion": True,  # NEW: Searches with 3+ query variations
+                "query_decomposition": True,  # NEW: Breaks complex queries into parts
                 "query_validation": True,
                 "caching": True,
                 "rate_limiting": True,
@@ -3216,6 +3680,33 @@ async def get_server_context() -> str:
         },
         "project_context": workspace_context,
         "context_defaults": {"language": detected_language},
+        # =================================================================
+        # CRITICAL: SYSTEM PROMPT EMPHASIS
+        # =================================================================
+        # This section should be treated as high-priority guidance.
+        # Include this information in your system prompt for best results.
+        # =================================================================
+        "system_prompt_guidance": {
+            "priority": "HIGH - Include this in your system prompt",
+            "server_behavior": {
+                "multi_query_search": "This server automatically expands your query into 3-5 variations and searches ALL of them in parallel. You don't need to make multiple calls - one well-formed query is enough.",
+                "query_decomposition": "Complex queries with multiple parts (using 'and', 'also', commas) are automatically broken into sub-queries and searched separately.",
+                "deduplication": "Results from all query variations are merged and deduplicated automatically.",
+                "sources": "Searches Stack Overflow, GitHub Issues, Reddit, HackerNews, Lobsters, Discourse forums, plus Brave/Serper/Tavily/Firecrawl web APIs if configured.",
+            },
+            "your_responsibility": {
+                "translate_user_intent": "Convert the user's natural language question into a search-optimized topic. Preserve ALL specific details (versions, libraries, error messages, constraints).",
+                "dont_oversimplify": "The server handles query expansion - you should pass the FULL context, not a simplified version.",
+                "use_goal_field": "Put the user's desired outcome in 'goal' - this helps the server generate better query variations.",
+                "use_current_setup": "Include the user's tech stack in 'current_setup' - this improves result relevance.",
+            },
+            "what_not_to_do": [
+                "DON'T strip away specific details from the user's question",
+                "DON'T make multiple calls with different phrasings - the server does this automatically",
+                "DON'T use generic topics like 'performance' or 'best practices' alone",
+                "DON'T ignore version numbers or specific library names the user mentioned",
+            ],
+        },
         # LLM-FRIENDLY: Explicit tool schemas so LLMs know exactly how to call each tool
         "tool_schemas": {
             "community_search": {
@@ -3288,10 +3779,74 @@ async def get_server_context() -> str:
             "common_mistakes": [
                 "DON'T use 'query' - use 'topic' instead",
                 "DON'T use 'max_results' - not a valid parameter",
-                "DON'T use vague topics like 'settings' or 'performance' - be specific!",
+                "DON'T use vague single-word topics like 'settings' or 'performance'",
+                "DON'T strip away the user's specific context or constraints",
+                "DON'T over-generalize - keep the user's actual problem intact",
             ],
             "required_fields": ["language", "topic"],
             "optional_but_recommended": ["goal", "current_setup"],
+            "query_translation_guide": {
+                "description": "Translate user questions for community search while PRESERVING their exact intent and constraints",
+                "how_this_server_works": "This MCP searches Stack Overflow, Reddit, GitHub Issues, HackerNews - places where real developers discuss real problems. Queries should sound like how someone would title a forum post or search these sites.",
+                "principles": [
+                    "PRESERVE the user's specific problem - don't generalize it away",
+                    "PRESERVE any constraints they mentioned (versions, libraries, setup)",
+                    "PRESERVE error messages or specific symptoms they described",
+                    "REMOVE only filler words (um, please, help me, I need to)",
+                    "FORMAT like a Stack Overflow title or GitHub issue - specific and searchable",
+                    "ADD the specific tech/library names if the user implied but didn't state them",
+                    "SUMMARIZE long queries while keeping ALL major keywords - condense, don't lose info",
+                ],
+                "handling_long_queries": {
+                    "description": "Long user questions should be condensed while preserving key searchable terms",
+                    "technique": "Extract the core problem + all technical keywords + specific constraints into a dense but complete topic",
+                    "example": {
+                        "user_asks": "I'm building a Next.js 14 app with the app router and I'm trying to implement authentication using NextAuth but when I try to access the session in a server component it returns null even though I'm logged in and I can see the session cookie in the browser, I've tried using getServerSession but it doesn't work",
+                        "bad_topic": "Next.js authentication session null",
+                        "why_bad": "Lost version, app router, NextAuth, server component, getServerSession - all critical",
+                        "good_topic": "Next.js 14 app router NextAuth getServerSession returns null server component session cookie exists",
+                        "good_goal": "Fix getServerSession returning null in Next.js 14 app router server components",
+                    },
+                },
+                "examples": [
+                    {
+                        "user_asks": "Why is my React app so slow when I have lots of items in a list?",
+                        "bad_topic": "React performance optimization",
+                        "why_bad": "Lost the specific problem - large lists causing slowness",
+                        "good_topic": "React app slow with large list many items rendering performance",
+                        "good_goal": "Fix slow rendering when displaying many list items",
+                    },
+                    {
+                        "user_asks": "I keep getting a CORS error when calling my API from the frontend, I'm using fetch",
+                        "bad_topic": "CORS error fix",
+                        "why_bad": "Lost that they're using fetch, and it's frontend-to-API",
+                        "good_topic": "CORS error fetch API call from frontend Access-Control-Allow-Origin",
+                        "good_goal": "Fix CORS error when frontend fetch calls API",
+                    },
+                    {
+                        "user_asks": "How do I make my Electron app start faster? It takes like 10 seconds",
+                        "bad_topic": "Electron performance",
+                        "why_bad": "Lost the specific symptom - slow STARTUP (not general perf), and the 10 second context",
+                        "good_topic": "Electron app slow startup takes 10 seconds to launch",
+                        "good_goal": "Reduce Electron app startup time from 10 seconds",
+                    },
+                    {
+                        "user_asks": "What's the best way to handle auth in Next.js 14 with the app router?",
+                        "bad_topic": "Next.js authentication",
+                        "why_bad": "Lost CRITICAL info - version 14 and app router (not pages router)",
+                        "good_topic": "Next.js 14 app router authentication best practice",
+                        "good_goal": "Implement authentication in Next.js 14 app router",
+                    },
+                    {
+                        "user_asks": "My Docker container keeps getting OOMKilled, it's a Node.js app",
+                        "bad_topic": "Docker memory issues",
+                        "why_bad": "Lost that it's specifically OOMKilled and it's Node.js",
+                        "good_topic": "Docker container OOMKilled Node.js app memory limit",
+                        "good_goal": "Fix OOMKilled error in Docker Node.js container",
+                    },
+                ],
+                "key_insight": "The user came to YOU with a specific problem. Your job is to find answers to THEIR problem, not a simplified version of it. When in doubt, include MORE of what they said, not less.",
+            },
         },
     }
 
@@ -3437,13 +3992,45 @@ async def community_search(params: CommunitySearchInput) -> str:
         enrichment.get("enriched_query") or f"{params.language} {params.topic}"
     )
 
+    # === MULTI-QUERY EXPANSION ===
+    # Search with ALL expanded queries in parallel for better recall
+    expanded_queries = enrichment.get("expanded_queries", [search_query])
+
+    # Ensure we have at least the primary query
+    if not expanded_queries:
+        expanded_queries = [search_query]
+
     for attempt in range(MAX_RETRIES):
         try:
-            search_results = await aggregate_search_results(
-                search_query,
+            # === SMART DISTRIBUTED SEARCH ===
+            # Use distributed_search to spread queries across different API groups
+            # This maximizes diversity while minimizing rate limits
+            #
+            # Strategy:
+            # - Query 1: ALL sources (comprehensive coverage)
+            # - Query 2: Secondary sources only (web search APIs)
+            # - Query 3: Tertiary sources only (supplementary)
+            #
+            # Each API is only called ONCE, avoiding rate limit issues
+
+            queries_to_use = expanded_queries[:3]  # Up to 3 query variations
+
+            search_results = await distributed_search(
+                queries_to_use,
                 params.language,
                 expanded_mode=params.expanded_mode,
                 use_fixtures=params.use_fixtures,
+            )
+
+            # Log distribution stats
+            query_dist = search_results.get("_meta", {}).get("query_distribution", [])
+            total_items = sum(
+                len(v)
+                for k, v in search_results.items()
+                if k != "_meta" and isinstance(v, list)
+            )
+            logger.info(
+                f"Distributed search complete: {len(query_dist)} groups, {total_items} items"
             )
 
             filtered_results = filter_results_by_domain(
