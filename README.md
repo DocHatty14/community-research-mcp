@@ -2,6 +2,8 @@
 
 # Community Research MCP
 
+<img width="1170" height="1170" alt="image" src="https://github.com/user-attachments/assets/fe3d1f19-b60a-4d95-bad4-bf8039873fed" />
+
 ### Street-smart tips, hacks, and workarounds from devs who've been there.
 
 An MCP server that digs through Stack Overflow, GitHub Issues, Hacker News, and other developer watering holes to find battle-tested solutions, clever workarounds, and real-world patterns that actually work.
