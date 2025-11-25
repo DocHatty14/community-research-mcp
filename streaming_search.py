@@ -274,6 +274,8 @@ async def get_all_search_results_streaming(
     context: Optional[Any] = None,
     search_firecrawl_func=None,
     search_tavily_func=None,
+    search_brave_func=None,
+    search_serper_func=None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Convenience function to stream results from all default search sources.
@@ -289,6 +291,8 @@ async def get_all_search_results_streaming(
             "hackernews": search_hackernews_func,
             "firecrawl": search_firecrawl_func,
             "tavily": search_tavily_func,
+            "brave": search_brave_func,
+            "serper": search_serper_func,
         }.items()
         if func is not None
     }

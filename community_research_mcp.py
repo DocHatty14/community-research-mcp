@@ -104,11 +104,13 @@ except ImportError:
 # Import core modules
 # Import refactored modules
 from api import (
+    search_brave,
     search_discourse,
     search_firecrawl,
     search_github,
     search_hackernews,
     search_lobsters,
+    search_serper,
     search_stackoverflow,
     search_tavily,
 )
@@ -139,6 +141,8 @@ FIRECRAWL_API_URL = os.getenv(
 )
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 TAVILY_API_URL = os.getenv("TAVILY_API_URL", "https://api.tavily.com/search")
+BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 
 # Check if Reddit credentials are available
 reddit_authenticated = False
@@ -169,13 +173,34 @@ def load_config() -> Dict[str, Any]:
     config_path = Path(__file__).parent / "config.json"
     default_config = {
         "quality": {"min_score": 0, "min_votes": 0, "enable_filtering": False},
+        # Source weights prioritize community discussions over official docs
+        # Higher weight = more trusted for "street-smart" solutions
         "sources": {
-            "stackoverflow": {"enabled": True, "weight": 10},
-            "github": {"enabled": True, "weight": 8},
-            "reddit": {"enabled": True, "weight": 3},
-            "hackernews": {"enabled": True, "weight": 5},
-            "lobsters": {"enabled": True, "weight": 6},
-            "discourse": {"enabled": True, "weight": 7},
+            # Primary community sources - where real solutions live
+            "stackoverflow": {"enabled": True, "weight": 10},  # Accepted answers = gold
+            "github": {
+                "enabled": True,
+                "weight": 9,
+            },  # Issues & discussions = real bugs/fixes
+            "discourse": {
+                "enabled": True,
+                "weight": 8,
+            },  # Framework-specific community wisdom
+            "lobsters": {
+                "enabled": True,
+                "weight": 7,
+            },  # Technical depth, experienced devs
+            "hackernews": {
+                "enabled": True,
+                "weight": 6,
+            },  # Industry discussions, war stories
+            "reddit": {"enabled": True, "weight": 6},  # r/programming, r/webdev, etc.
+            # Web search APIs - find community content across the web
+            # Lower weight because they may return official docs (we want workarounds)
+            "brave": {"enabled": True, "weight": 4},
+            "serper": {"enabled": True, "weight": 4},
+            "tavily": {"enabled": True, "weight": 4},
+            "firecrawl": {"enabled": True, "weight": 3},
         },
         "cache": {"enabled": True, "ttl_seconds": 3600},
         "output": {
@@ -750,6 +775,217 @@ def enrich_query(
     }
 
 
+# =============================================================================
+# STREET-SMART SEARCH CONFIGURATION
+# =============================================================================
+# "Where the official documentation ends and actual street-smart solutions begin."
+#
+# These settings ensure web search APIs find REAL solutions from REAL developers:
+# - Workarounds that actually work in production
+# - "This finally worked for me" comments
+# - Battle-tested hacks and fixes
+# - The messy truth that official docs don't tell you
+
+# Community domains - where developers share what ACTUALLY works
+COMMUNITY_DOMAINS = [
+    # Q&A sites - front line of problem solving
+    "stackoverflow.com",
+    "stackexchange.com",
+    "superuser.com",
+    "serverfault.com",
+    # Forums & Discussion - raw, unfiltered experiences
+    "reddit.com",
+    "news.ycombinator.com",
+    "lobste.rs",
+    "dev.to",
+    "hashnode.dev",
+    # GitHub - real bugs, real fixes, real discussions
+    "github.com",
+    "gist.github.com",
+    # Framework communities - specialized wisdom
+    "discourse.org",
+    "community.openai.com",
+    "discuss.python.org",
+    "forum.cursor.com",
+    # Developer blogs - war stories and lessons learned
+    "medium.com",
+    "freecodecamp.org",
+    "css-tricks.com",
+    "smashingmagazine.com",
+]
+
+# Keywords that signal REAL solutions (not marketing or official docs)
+STREET_SMART_KEYWORDS = [
+    # Solution indicators
+    "workaround",
+    "fix",
+    "solved",
+    "working",
+    "finally",
+    # Community wisdom
+    "hack",
+    "trick",
+    "tip",
+    "gotcha",
+    "caveat",
+    "pitfall",
+    # Real experiences
+    "how I",
+    "finally got",
+    "figured out",
+    "turns out",
+    "the trick is",
+    "what worked",
+    "after hours",
+    # Discussion markers
+    "answered",
+    "accepted",
+    "upvoted",
+    "this helped",
+]
+
+
+def enrich_query_for_community(
+    query: str,
+    language: Optional[str] = None,
+    search_type: str = "general",
+) -> Dict[str, Any]:
+    """
+    Enrich a query to find STREET-SMART solutions, not sanitized documentation.
+
+    This targets the places where developers share what ACTUALLY works:
+    - Real fixes from Stack Overflow accepted answers
+    - "This finally worked for me" comments from Reddit
+    - GitHub issues where someone figured out the workaround
+    - The messy hacks that people actually use in production
+
+    Args:
+        query: The original search query
+        language: Optional programming language context
+        search_type: "general", "troubleshooting", "implementation", "comparison"
+
+    Returns:
+        Dict with enriched queries optimized for finding real-world solutions.
+    """
+    base = f"{language} {query}".strip() if language else query.strip()
+    query_lower = query.lower()
+
+    # Detect query intent
+    is_troubleshooting = any(
+        word in query_lower
+        for word in [
+            "error",
+            "fix",
+            "issue",
+            "problem",
+            "not working",
+            "fails",
+            "bug",
+            "broken",
+        ]
+    )
+    is_how_to = any(
+        word in query_lower
+        for word in ["how to", "how do", "how can", "way to", "best way"]
+    )
+
+    # Build street-smart query variants
+    queries = {
+        "primary": base,
+        "community_focused": None,
+        "site_restricted": None,
+        "solution_focused": None,
+    }
+
+    if is_troubleshooting or search_type == "troubleshooting":
+        # For errors - find what ACTUALLY fixed it
+        queries["community_focused"] = f"{base} workaround fix solved"
+        queries["solution_focused"] = f'{base} "finally worked" OR "this fixed"'
+        queries["site_restricted"] = f"{base} site:stackoverflow.com OR site:github.com"
+    elif is_how_to or search_type == "implementation":
+        # For implementation - find working examples, not docs
+        queries["community_focused"] = f"{base} working example implementation"
+        queries["solution_focused"] = f'{base} "here\'s how" OR "what worked"'
+        queries["site_restricted"] = f"{base} site:stackoverflow.com OR site:dev.to"
+    elif search_type == "comparison":
+        # For comparisons - find real production experience
+        queries["community_focused"] = f"{base} vs comparison real experience"
+        queries["solution_focused"] = f'{base} "we switched" OR "in production"'
+        queries["site_restricted"] = (
+            f"{base} site:reddit.com OR site:news.ycombinator.com"
+        )
+    else:
+        # General - bias toward community solutions over docs
+        queries["community_focused"] = f"{base} workaround solution community"
+        queries["solution_focused"] = f'{base} "worked for me" OR fix'
+        queries["site_restricted"] = f"{base} site:stackoverflow.com OR site:reddit.com"
+
+    return {
+        "queries": queries,
+        "include_domains": COMMUNITY_DOMAINS,
+        "search_hints": {
+            "is_troubleshooting": is_troubleshooting,
+            "is_how_to": is_how_to,
+            "suggested_type": search_type,
+        },
+    }
+
+
+def get_community_query(query: str, language: Optional[str] = None) -> str:
+    """
+    Transform a query to find STREET-SMART solutions.
+
+    This is the simple interface used by web search APIs (Brave, Serper, Tavily, Firecrawl).
+    Adds terms that bias results toward real-world fixes over official documentation.
+
+    The goal: Find the Reddit comment, Stack Overflow answer, or GitHub issue
+    where someone says "I finally figured it out..." or "here's what actually worked"
+
+    Args:
+        query: Original search query
+        language: Optional programming language
+
+    Returns:
+        Enriched query string targeting community-sourced solutions.
+    """
+    base = f"{language} {query}".strip() if language else query.strip()
+    query_lower = query.lower()
+
+    # Check if query already has street-smart terms
+    has_solution_terms = any(
+        term in query_lower
+        for term in [
+            "workaround",
+            "solution",
+            "fix",
+            "solved",
+            "hack",
+            "trick",
+            "worked",
+        ]
+    )
+
+    if has_solution_terms:
+        # Query already targets solutions, don't over-enrich
+        return base
+
+    # Add street-smart terms based on query type
+    if any(
+        word in query_lower
+        for word in ["error", "exception", "fails", "not working", "broken"]
+    ):
+        # Error queries - find actual fixes and workarounds
+        return f"{base} workaround fix solved"
+    elif any(
+        word in query_lower for word in ["how to", "how do", "implement", "create"]
+    ):
+        # How-to queries - find working examples from the community
+        return f"{base} working example solution"
+    else:
+        # General queries - bias toward community content over official docs
+        return f"{base} community workaround solution"
+
+
 def detect_conflicts_from_findings(
     findings: List[Dict[str, Any]],
 ) -> List[Dict[str, str]]:
@@ -1160,6 +1396,16 @@ async def aggregate_search_results(
             run_source("tavily", search_tavily, language, normalized_query)
         )
 
+    if BRAVE_SEARCH_API_KEY and source_config.get("brave", {}).get("enabled", True):
+        tasks["brave"] = asyncio.create_task(
+            run_source("brave", search_brave, language, normalized_query)
+        )
+
+    if SERPER_API_KEY and source_config.get("serper", {}).get("enabled", True):
+        tasks["serper"] = asyncio.create_task(
+            run_source("serper", search_serper, language, normalized_query)
+        )
+
     raw_results: Dict[str, Any] = {}
     for source, task in tasks.items():
         results, audit_entry = await task
@@ -1478,18 +1724,39 @@ def get_manual_evidence(topic: str) -> List[Dict[str, Any]]:
     return MANUAL_EVIDENCE.get(key, [])
 
 
+# Domains where "street-smart" solutions live - prioritized over official docs
+# These are places where developers share what ACTUALLY works in production
 PREFERRED_DOMAINS = {
+    # Q&A sites - the front line of problem solving
     "stackoverflow.com",
+    "stackexchange.com",
+    "superuser.com",
+    "serverfault.com",
+    # GitHub - issues, discussions, and real bug fixes
     "github.com",
+    "gist.github.com",
+    # Reddit - raw, unfiltered developer experiences
+    "reddit.com",
+    # Tech news/discussion - experienced developer insights
+    "news.ycombinator.com",
+    "lobste.rs",
+    # Developer blogs and communities
+    "dev.to",
+    "hashnode.dev",
+    "medium.com",
+    "freecodecamp.org",
+    # Framework-specific communities
+    "discourse.org",
+    "community.openai.com",
+    "discuss.python.org",
+    "forum.cursor.com",
+    "users.rust-lang.org",
+    # Language/framework specific (high-quality community content)
     "bevyengine.org",
     "docs.rs",
     "crates.io",
-    "users.rust-lang.org",
-    "reddit.com",
     "fastapi.tiangolo.com",
     "docs.celeryq.dev",
-    "dev.to",
-    "docs.docker.com",
     "tokio.rs",
 }
 
@@ -2166,23 +2433,27 @@ async def synthesize_with_multi_model(
 )
 async def plan_research(query: str, language: str, goal: Optional[str] = None) -> str:
     """
-    Break down a complex research query into a structured, strategic plan.
+    Plan a strategic hunt for street-smart solutions across the developer community.
+
+    Before diving into Stack Overflow and Reddit, get a battle plan that ensures
+    you find the REAL solutions - the workarounds, hacks, and "what actually worked"
+    answers that official docs never mention.
 
     WORKFLOW: This is Step 1 of the research workflow.
     1. Call plan_research FIRST to get a strategic plan
-    2. Review the plan and refine your search strategy
+    2. Review the plan - it generates queries optimized for finding community wisdom
     3. Call community_search with the refined queries from the plan
-    4. Use synthesis_instructions in the response to analyze results
+    4. Use synthesis_instructions to extract the battle-tested solutions
 
     WHEN TO USE THIS TOOL:
-    - Complex research topics with multiple aspects to explore
-    - When you need to compare multiple approaches or libraries
-    - Architecture decisions requiring broad community input
-    - Migration or upgrade research spanning multiple concerns
-    - Any research where a strategic approach will yield better results
+    - Complex problems where you need multiple community perspectives
+    - Comparing approaches ("which one do people ACTUALLY use in production?")
+    - Architecture decisions where you want to learn from others' mistakes
+    - Migration/upgrade research ("what gotchas did people hit?")
+    - Any research where you want comprehensive community intelligence
 
     WHEN TO SKIP (use community_search directly):
-    - Simple, specific questions ("how to parse JSON in Python")
+    - Simple, specific questions with likely one good answer
     - Error debugging with a specific error message
     - Quick lookup of a single concept or API
 
@@ -2680,13 +2951,15 @@ async def get_server_context() -> str:
     """
     Get the Community Research MCP server context and capabilities.
 
+    "Where the official documentation ends and actual street-smart solutions begin."
+
     This tool returns information about what the server detected in your workspace,
     including programming languages, frameworks, and default context values. ALWAYS
     call this first before using other tools.
 
     Returns:
         str: JSON-formatted server context including:
-            - handshake: Server identification and status
+            - handshake: Server identification and mission
             - project_context: Detected workspace information
             - context_defaults: Default values for search
 
@@ -2701,7 +2974,8 @@ async def get_server_context() -> str:
             "server": "community-research-mcp",
             "version": "1.0.0",
             "status": "initialized",
-            "description": "Searches Stack Overflow, Reddit, GitHub, forums for real solutions",
+            "mission": "Where the official documentation ends and actual street-smart solutions begin",
+            "description": "Find real solutions from Stack Overflow, Reddit, GitHub issues, and forums - the workarounds, hacks, and battle-tested fixes that people actually use",
             "capabilities": {
                 "multi_source_search": True,
                 "query_validation": True,
@@ -2732,26 +3006,33 @@ async def get_server_context() -> str:
 )
 async def community_search(params: CommunitySearchInput) -> str:
     """
-    Search Stack Overflow, Reddit, GitHub, and forums for real solutions from the developer community.
+    Find STREET-SMART solutions from developers who've already fought through your exact problem.
+
+    "Where the official documentation ends and actual solutions begin."
+
+    NOT sanitized documentation. NOT official guides. NOT theoretical best practices.
+    The ACTUAL fixes from Stack Overflow, Reddit threads, GitHub issues, and forums.
+    The messy workarounds, the "this finally worked for me" comments, the battle-tested
+    hacks that people actually use in production.
 
     WORKFLOW GUIDANCE:
-    - For COMPLEX research (architecture decisions, comparing approaches, multi-faceted topics):
+    - For COMPLEX research (architecture decisions, comparing approaches):
       Call plan_research FIRST to get a strategic plan, then use the queries it provides.
-    - For SIMPLE queries (specific errors, single concepts, quick lookups):
+    - For SIMPLE queries (specific errors, quick lookups):
       Call this tool directly.
 
-    WHAT THIS TOOL DOES:
-    - Searches multiple community sources in parallel (Stack Overflow, GitHub Issues, Reddit, HackerNews)
-    - Finds real-world solutions, workarounds, and best practices
-    - Returns structured findings with evidence links and quality scores
-    - Identifies conflicts and provides actionable recommendations
-    - Includes synthesis_instructions for you to analyze the results
+    WHAT THIS TOOL FINDS:
+    - Accepted Stack Overflow answers with working code
+    - GitHub issues where someone figured out the workaround
+    - Reddit threads with "I finally solved this" comments
+    - HackerNews discussions from experienced developers
+    - The gotchas and caveats that official docs don't mention
 
     WHEN TO USE DIRECTLY:
-    - Debugging specific errors or issues
-    - Finding real-world implementation patterns
-    - Quick lookup of a concept or API usage
-    - Getting community opinions on a specific library/tool
+    - "Why is this error happening?" - Find what actually fixed it
+    - "How do I implement X?" - Find working examples, not docs
+    - "What's the workaround for Y?" - Find production-tested hacks
+    - "Has anyone else hit this issue?" - Find the community's collective trauma
 
     WHEN TO USE plan_research FIRST:
     - Comparing multiple approaches or libraries
@@ -3818,6 +4099,12 @@ async def streaming_community_search(
         if TAVILY_API_KEY:
             search_functions["tavily"] = search_tavily
 
+        if BRAVE_SEARCH_API_KEY:
+            search_functions["brave"] = search_brave
+
+        if SERPER_API_KEY:
+            search_functions["serper"] = search_serper
+
         # Stream results and synthesis
         output_parts = []
 
@@ -3861,28 +4148,31 @@ async def streaming_community_search(
 )
 async def deep_community_search(params: CommunitySearchInput) -> str:
     """
-    Perform a deep, multi-phase research session for comprehensive answers.
+    Deep dive into the programming community's collective wisdom and hard-won solutions.
+
+    Like Ctrl+F for the entire community's trauma - finds every workaround, hack,
+    and "this finally worked" moment across Stack Overflow, Reddit, GitHub, and forums.
 
     WHEN TO USE THIS TOOL:
-    - Complex topics requiring thorough investigation
-    - When community_search results are insufficient
-    - Research requiring multiple angles and follow-up queries
-    - Topics where you need both breadth AND depth
+    - You need the FULL picture, not just the first answer
+    - The problem is complex with multiple potential solutions
+    - You want to find ALL the gotchas before they bite you
+    - community_search didn't find enough street-smart solutions
 
     WORKFLOW:
-    - Use this tool DIRECTLY for deep research (it includes its own planning)
-    - No need for plan_research first - this tool does multiple search passes
+    - Use this tool DIRECTLY (it includes its own multi-phase planning)
+    - No need for plan_research first - this tool searches multiple angles automatically
     - Results include comprehensive findings with synthesis_instructions
 
     HOW IT WORKS:
     1. Initial broad search across all community sources
-    2. Automatic follow-up searches for best practices, common issues, and pitfalls
-    3. Content fetching from top results
-    4. Final synthesis of all gathered information
+    2. Automatic follow-up searches for workarounds, pitfalls, and edge cases
+    3. Deep content extraction from the most upvoted/accepted answers
+    4. Synthesis of the community's collective experience
 
     WHEN TO USE community_search INSTEAD:
-    - Simple, specific questions
-    - Quick lookups where one search pass is enough
+    - Quick, specific questions with likely one good answer
+    - Simple lookups where depth isn't needed
 
     Args:
         params: CommunitySearchInput object with language, topic, goal, current_setup
@@ -4062,6 +4352,12 @@ async def parallel_multi_source_search(
     if TAVILY_API_KEY:
         source_map["tavily"] = search_tavily
 
+    if BRAVE_SEARCH_API_KEY:
+        source_map["brave"] = search_brave
+
+    if SERPER_API_KEY:
+        source_map["serper"] = search_serper
+
     # Filter to requested sources
     search_functions = {
         name: func for name, func in source_map.items() if name in source_list
@@ -4098,6 +4394,8 @@ async def parallel_multi_source_search(
             context=context,
             search_firecrawl_func=search_functions.get("firecrawl"),
             search_tavily_func=search_functions.get("tavily"),
+            search_brave_func=search_functions.get("brave"),
+            search_serper_func=search_functions.get("serper"),
         ):
             if update["type"] == "complete":
                 all_results = update["state"].results_by_source
