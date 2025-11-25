@@ -1,274 +1,205 @@
-"""Brave Search API integration.
+"""
+Brave Search API.
 
-Implements Brave Search endpoints:
-- Web search with filtering, freshness, and pagination
-- News search for recent articles
-- Extra snippets for additional context
+Privacy-focused web search with news, filtering,
+freshness controls, and extra snippet extraction.
+
+API: https://brave.com/search/api/
+Rate Limits: 2,000/month (free tier)
 """
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import httpx
 
-DEFAULT_TIMEOUT = 30.0
-BASE_URL = "https://api.search.brave.com/res/v1"
+__all__ = ["search", "search_news"]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Configuration
+# ══════════════════════════════════════════════════════════════════════════════
+
+API_BASE = "https://api.search.brave.com/res/v1"
+API_TIMEOUT = 30.0
+API_KEY = os.getenv("BRAVE_SEARCH_API_KEY")
+
+logger = logging.getLogger(__name__)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Search Functions
+# ══════════════════════════════════════════════════════════════════════════════
 
 
-async def search_brave_web(
+async def search(
     query: str,
-    count: int = 10,
-    offset: int = 0,
+    language: Optional[str] = None,
+    *,
+    max_results: int = 10,
     freshness: Optional[str] = None,
-    extra_snippets: bool = True,
-    result_filter: Optional[str] = None,
     country: str = "us",
-    search_lang: str = "en",
-) -> List[Dict[str, Any]]:
-    """Search Brave Web Search API.
+) -> list[dict[str, Any]]:
+    """
+    Search the web via Brave Search API.
 
     Args:
-        query: Search query (max 400 chars, 50 words)
-        count: Number of results (1-20, default 10)
-        offset: Pagination offset (0-9, default 0)
-        freshness: Filter by age - pd (24h), pw (week), pm (month), py (year), or YYYY-MM-DDtoYYYY-MM-DD
-        extra_snippets: Include additional snippets from the page
-        result_filter: Filter types - web, news, images, videos (comma-separated)
-        country: Country code for results (default: us)
-        search_lang: Language code (default: en)
+        query: Search query string (max 400 chars)
+        language: Programming language context (prepended to query)
+        max_results: Maximum results (1-20)
+        freshness: Filter by age - 'pd' (24h), 'pw' (week), 'pm' (month), 'py' (year)
+        country: Country code for results
 
     Returns:
-        List of normalized search results with title, url, snippet, and metadata.
-    """
-    api_key = os.getenv("BRAVE_SEARCH_API_KEY")
+        List of results with title, url, snippet
 
-    if not api_key:
-        logging.debug("Brave Search skipped: BRAVE_SEARCH_API_KEY not set")
+    Example:
+        >>> results = await search("websocket tutorial", language="python")
+    """
+    if not API_KEY:
+        logger.debug("Skipped: BRAVE_SEARCH_API_KEY not set")
         return []
 
-    params: Dict[str, Any] = {
-        "q": query[:400],  # Max 400 chars
-        "count": min(max(count, 1), 20),  # Clamp to 1-20
-        "offset": min(max(offset, 0), 9),  # Clamp to 0-9
+    full_query = f"{language} {query}".strip() if language else query
+    full_query = full_query[:400]  # API limit
+
+    params: dict[str, Any] = {
+        "q": full_query,
+        "count": min(max(max_results, 1), 20),
         "country": country,
-        "search_lang": search_lang,
-        "extra_snippets": str(extra_snippets).lower(),
+        "extra_snippets": "true",
     }
 
     if freshness:
         params["freshness"] = freshness
 
-    if result_filter:
-        params["result_filter"] = result_filter
-
     try:
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
             response = await client.get(
-                f"{BASE_URL}/web/search",
+                f"{API_BASE}/web/search",
                 headers={
                     "Accept": "application/json",
-                    "Accept-Encoding": "gzip",
-                    "X-Subscription-Token": api_key,
+                    "X-Subscription-Token": API_KEY,
                 },
                 params=params,
             )
             response.raise_for_status()
             data = response.json()
 
-        results: List[Dict[str, Any]] = []
+        results = []
 
-        # Process web results
-        web_results = data.get("web", {}).get("results", [])
-        for item in web_results:
-            url = item.get("url")
-            if not url:
-                continue
+        # Web results
+        for item in data.get("web", {}).get("results", []):
+            if url := item.get("url"):
+                # Combine main snippet with extras
+                snippets = [item.get("description", "")]
+                snippets.extend(item.get("extra_snippets", []))
 
-            # Combine description with extra snippets if available
-            snippet_parts = [item.get("description", "")]
-            extra = item.get("extra_snippets", [])
-            if extra:
-                snippet_parts.extend(extra)
+                results.append(
+                    {
+                        "title": item.get("title", ""),
+                        "url": url,
+                        "snippet": " ".join(filter(None, snippets)),
+                        "age": item.get("age", ""),
+                        "source": "brave",
+                    }
+                )
 
-            results.append(
-                {
-                    "title": item.get("title", "Untitled"),
-                    "url": url,
-                    "snippet": " ".join(filter(None, snippet_parts)),
-                    "age": item.get("age", ""),
-                    "language": item.get("language", ""),
-                    "family_friendly": item.get("family_friendly", True),
-                    "source": "brave_web",
-                }
-            )
-
-        # Process news results if present
-        news_results = data.get("news", {}).get("results", [])
-        for item in news_results:
-            url = item.get("url")
-            if not url:
-                continue
-
-            results.append(
-                {
-                    "title": item.get("title", "Untitled"),
-                    "url": url,
-                    "snippet": item.get("description", ""),
-                    "age": item.get("age", ""),
-                    "source_name": item.get("meta_url", {}).get("hostname", ""),
-                    "source": "brave_news",
-                }
-            )
+        # Include news if present
+        for item in data.get("news", {}).get("results", []):
+            if url := item.get("url"):
+                results.append(
+                    {
+                        "title": item.get("title", ""),
+                        "url": url,
+                        "snippet": item.get("description", ""),
+                        "age": item.get("age", ""),
+                        "type": "news",
+                        "source": "brave",
+                    }
+                )
 
         return results
 
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 401:
-            logging.error("Brave Search: Invalid API key")
+            logger.error("Invalid API key")
         elif e.response.status_code == 429:
-            logging.warning("Brave Search: Rate limit exceeded")
+            logger.warning("Rate limit exceeded")
         else:
-            logging.exception("Brave Search HTTP error")
+            logger.warning(f"HTTP {e.response.status_code}")
         return []
-    except httpx.HTTPError:
-        logging.exception("Brave Search HTTP error during search")
-        return []
-    except Exception:
-        logging.exception("Brave Search unexpected error")
+    except Exception as e:
+        logger.error(f"Search failed: {e}")
         return []
 
 
-async def search_brave_news(
+async def search_news(
     query: str,
-    count: int = 10,
-    offset: int = 0,
+    language: Optional[str] = None,
+    *,
+    max_results: int = 10,
     freshness: Optional[str] = None,
-    country: str = "us",
-    search_lang: str = "en",
-) -> List[Dict[str, Any]]:
-    """Search Brave News Search API for recent articles.
+) -> list[dict[str, Any]]:
+    """
+    Search Brave News.
 
     Args:
-        query: Search query
-        count: Number of results (1-20)
-        offset: Pagination offset (0-9)
-        freshness: Filter by age - pd (24h), pw (week), pm (month)
-        country: Country code
-        search_lang: Language code
+        query: Search query string
+        language: Programming language context
+        max_results: Maximum results (1-20)
+        freshness: Filter by age - 'pd', 'pw', 'pm'
 
     Returns:
-        List of news results with title, url, snippet, and metadata.
+        List of news articles
     """
-    api_key = os.getenv("BRAVE_SEARCH_API_KEY")
-
-    if not api_key:
-        logging.debug("Brave News skipped: BRAVE_SEARCH_API_KEY not set")
+    if not API_KEY:
         return []
 
-    params: Dict[str, Any] = {
-        "q": query[:400],
-        "count": min(max(count, 1), 20),
-        "offset": min(max(offset, 0), 9),
-        "country": country,
-        "search_lang": search_lang,
+    full_query = f"{language} {query}".strip() if language else query
+
+    params: dict[str, Any] = {
+        "q": full_query[:400],
+        "count": min(max(max_results, 1), 20),
     }
 
     if freshness:
         params["freshness"] = freshness
 
     try:
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
             response = await client.get(
-                f"{BASE_URL}/news/search",
+                f"{API_BASE}/news/search",
                 headers={
                     "Accept": "application/json",
-                    "Accept-Encoding": "gzip",
-                    "X-Subscription-Token": api_key,
+                    "X-Subscription-Token": API_KEY,
                 },
                 params=params,
             )
             response.raise_for_status()
             data = response.json()
 
-        results: List[Dict[str, Any]] = []
-        news_results = data.get("results", [])
+        return [
+            {
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "snippet": item.get("description", ""),
+                "age": item.get("age", ""),
+                "publisher": item.get("meta_url", {}).get("hostname", ""),
+                "source": "brave:news",
+            }
+            for item in data.get("results", [])
+            if item.get("url")
+        ]
 
-        for item in news_results:
-            url = item.get("url")
-            if not url:
-                continue
-
-            results.append(
-                {
-                    "title": item.get("title", "Untitled"),
-                    "url": url,
-                    "snippet": item.get("description", ""),
-                    "age": item.get("age", ""),
-                    "source_name": item.get("meta_url", {}).get("hostname", ""),
-                    "thumbnail": item.get("thumbnail", {}).get("src", ""),
-                    "source": "brave_news",
-                }
-            )
-
-        return results
-
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 429:
-            logging.warning("Brave News: Rate limit exceeded")
-        else:
-            logging.exception("Brave News HTTP error")
-        return []
-    except httpx.HTTPError:
-        logging.exception("Brave News HTTP error during search")
-        return []
-    except Exception:
-        logging.exception("Brave News unexpected error")
+    except Exception as e:
+        logger.warning(f"News search failed: {e}")
         return []
 
 
-async def search_brave(
-    query: str,
-    language: Optional[str] = None,
-    count: int = 10,
-    freshness: Optional[str] = None,
-    community_focus: bool = True,
-) -> List[Dict[str, Any]]:
-    """Unified Brave search function matching other API signatures.
+# ══════════════════════════════════════════════════════════════════════════════
+# Backward Compatibility
+# ══════════════════════════════════════════════════════════════════════════════
 
-    This is the primary function used by the search aggregator.
-    Optimized to find community solutions, workarounds, and real-world fixes.
-
-    Args:
-        query: Search query
-        language: Optional programming language context (prepended to query)
-        count: Number of results
-        freshness: Optional freshness filter
-        community_focus: If True, enrich query to target community solutions
-
-    Returns:
-        List of normalized search results.
-    """
-    base_query = f"{language} {query}".strip() if language else query.strip()
-
-    if community_focus:
-        # Enrich query to find community solutions
-        query_lower = query.lower()
-        if any(
-            word in query_lower
-            for word in ["error", "exception", "fails", "not working"]
-        ):
-            enriched_query = f"{base_query} solution workaround"
-        elif any(word in query_lower for word in ["how to", "how do", "implement"]):
-            enriched_query = f"{base_query} example working"
-        else:
-            enriched_query = f"{base_query} community solution"
-    else:
-        enriched_query = base_query
-
-    return await search_brave_web(
-        query=enriched_query,
-        count=count,
-        extra_snippets=True,
-        freshness=freshness,
-    )
+search_brave = search
+search_brave_web = search
+search_brave_news = search_news

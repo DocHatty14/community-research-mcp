@@ -1,392 +1,224 @@
-"""Serper (Google Search) API integration.
+"""
+Serper API (Google Search).
 
-Implements Serper endpoints for Google Search results:
-- Web search with knowledge graph, organic results, people also ask
-- News search
-- Image search
+Real-time Google Search results including web, news, images,
+knowledge graph, and "People Also Ask" questions.
+
+API: https://serper.dev/
+Rate Limits: 2,500/month (free tier)
 """
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import httpx
 
-DEFAULT_TIMEOUT = 30.0
-BASE_URL = "https://google.serper.dev"
+__all__ = ["search", "search_news", "get_related"]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Configuration
+# ══════════════════════════════════════════════════════════════════════════════
+
+API_BASE = "https://google.serper.dev"
+API_TIMEOUT = 30.0
+API_KEY = os.getenv("SERPER_API_KEY")
+
+logger = logging.getLogger(__name__)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Search Functions
+# ══════════════════════════════════════════════════════════════════════════════
 
 
-def _get_api_key() -> Optional[str]:
-    """Get Serper API key from environment."""
-    return os.getenv("SERPER_API_KEY")
-
-
-async def search_serper(
+async def search(
     query: str,
     language: Optional[str] = None,
-    num_results: int = 10,
+    *,
+    max_results: int = 10,
     country: str = "us",
     locale: str = "en",
-    autocorrect: bool = True,
-    search_type: str = "search",
-    community_focus: bool = True,
-) -> List[Dict[str, Any]]:
-    """Search using Serper (Google Search API).
-
-    Optimized to find community solutions, workarounds, and real-world fixes.
+) -> list[dict[str, Any]]:
+    """
+    Search Google via Serper API.
 
     Args:
-        query: Search query
-        language: Optional programming language context (prepended to query)
-        num_results: Number of results (default 10, max 100)
-        country: Country code for results (e.g., "us", "uk")
-        locale: Language code (e.g., "en", "es")
-        autocorrect: Enable autocorrect (default True)
-        search_type: Type of search - "search", "news", "images"
-        community_focus: If True, enrich query to target community solutions
+        query: Search query string
+        language: Programming language context (prepended to query)
+        max_results: Maximum results to return
+        country: Country code (e.g., 'us', 'uk')
+        locale: Language code (e.g., 'en', 'es')
 
     Returns:
-        List of normalized search results with title, url, snippet, and metadata.
-    """
-    api_key = _get_api_key()
+        List of results with title, url, snippet, and metadata
 
-    if not api_key:
-        logging.debug("Serper skipped: SERPER_API_KEY not set")
+    Example:
+        >>> results = await search("async patterns", language="python")
+    """
+    if not API_KEY:
+        logger.debug("Skipped: SERPER_API_KEY not set")
         return []
 
-    base_query = f"{language} {query}".strip() if language else query.strip()
-
-    if community_focus:
-        # Enrich query to find community solutions
-        query_lower = query.lower()
-        if any(
-            word in query_lower
-            for word in ["error", "exception", "fails", "not working"]
-        ):
-            enriched_query = f"{base_query} solution workaround"
-        elif any(word in query_lower for word in ["how to", "how do", "implement"]):
-            enriched_query = f"{base_query} example working"
-        else:
-            enriched_query = f"{base_query} community solution"
-    else:
-        enriched_query = base_query
-
-    payload: Dict[str, Any] = {
-        "q": enriched_query,
-        "num": min(max(num_results, 1), 100),
-        "gl": country,
-        "hl": locale,
-        "autocorrect": autocorrect,
-    }
-
-    # Determine endpoint based on search type
-    endpoint = f"/{search_type}"
-    if search_type not in ["search", "news", "images"]:
-        endpoint = "/search"
+    full_query = f"{language} {query}".strip() if language else query
 
     try:
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
             response = await client.post(
-                f"{BASE_URL}{endpoint}",
-                headers={
-                    "X-API-KEY": api_key,
-                    "Content-Type": "application/json",
+                f"{API_BASE}/search",
+                headers={"X-API-KEY": API_KEY, "Content-Type": "application/json"},
+                json={
+                    "q": full_query,
+                    "num": min(max_results, 100),
+                    "gl": country,
+                    "hl": locale,
                 },
-                json=payload,
             )
             response.raise_for_status()
             data = response.json()
 
-        results: List[Dict[str, Any]] = []
+        results = []
 
-        # Extract knowledge graph if present
-        knowledge_graph = data.get("knowledgeGraph")
-        if knowledge_graph:
-            kg_result = {
-                "title": knowledge_graph.get("title", "Knowledge Graph"),
-                "url": knowledge_graph.get("website", ""),
-                "snippet": knowledge_graph.get("description", ""),
-                "type": knowledge_graph.get("type", ""),
-                "attributes": knowledge_graph.get("attributes", {}),
-                "source": "serper_knowledge_graph",
-                "is_knowledge_graph": True,
-            }
-            results.append(kg_result)
-
-        # Extract organic results
-        organic_results = data.get("organic", [])
-        for item in organic_results:
-            url = item.get("link")
-            if not url:
-                continue
-
+        # Knowledge graph
+        if kg := data.get("knowledgeGraph"):
             results.append(
                 {
-                    "title": item.get("title", "Untitled"),
-                    "url": url,
-                    "snippet": item.get("snippet", ""),
-                    "position": item.get("position", 0),
+                    "title": kg.get("title", "Knowledge Graph"),
+                    "url": kg.get("website", ""),
+                    "snippet": kg.get("description", ""),
+                    "type": "knowledge_graph",
                     "source": "serper",
                 }
             )
 
-        # Extract "People Also Ask" questions
-        people_also_ask = data.get("peopleAlsoAsk", [])
-        for item in people_also_ask:
-            if item.get("link"):
+        # Organic results
+        for item in data.get("organic", []):
+            if url := item.get("link"):
                 results.append(
                     {
-                        "title": item.get("question", "Related Question"),
-                        "url": item.get("link", ""),
+                        "title": item.get("title", ""),
+                        "url": url,
                         "snippet": item.get("snippet", ""),
-                        "source": "serper_people_also_ask",
-                        "is_question": True,
+                        "position": item.get("position", 0),
+                        "source": "serper",
                     }
                 )
 
-        # Extract news results if present
-        news_results = data.get("news", [])
-        for item in news_results:
-            url = item.get("link")
-            if not url:
-                continue
-
-            results.append(
-                {
-                    "title": item.get("title", "Untitled"),
-                    "url": url,
-                    "snippet": item.get("snippet", ""),
-                    "date": item.get("date", ""),
-                    "source_name": item.get("source", ""),
-                    "source": "serper_news",
-                }
-            )
+        # People Also Ask
+        for item in data.get("peopleAlsoAsk", []):
+            if url := item.get("link"):
+                results.append(
+                    {
+                        "title": item.get("question", ""),
+                        "url": url,
+                        "snippet": item.get("snippet", ""),
+                        "type": "question",
+                        "source": "serper",
+                    }
+                )
 
         return results
 
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 401:
-            logging.error("Serper: Invalid API key")
+            logger.error("Invalid API key")
         elif e.response.status_code == 429:
-            logging.warning("Serper: Rate limit exceeded")
+            logger.warning("Rate limit exceeded")
         else:
-            logging.exception("Serper HTTP error during search")
+            logger.warning(f"HTTP {e.response.status_code}")
         return []
-    except httpx.HTTPError:
-        logging.exception("Serper HTTP error during search")
-        return []
-    except Exception:
-        logging.exception("Serper unexpected error during search")
+    except Exception as e:
+        logger.error(f"Search failed: {e}")
         return []
 
 
-async def search_serper_news(
+async def search_news(
     query: str,
     language: Optional[str] = None,
-    num_results: int = 10,
-    country: str = "us",
-    locale: str = "en",
-) -> List[Dict[str, Any]]:
-    """Search Serper for news articles.
+    *,
+    max_results: int = 10,
+) -> list[dict[str, Any]]:
+    """
+    Search Google News via Serper.
 
     Args:
-        query: Search query
-        language: Optional language context
-        num_results: Number of results (default 10)
-        country: Country code
-        locale: Language code
+        query: Search query string
+        language: Programming language context
+        max_results: Maximum results to return
 
     Returns:
-        List of news results.
+        List of news articles with title, url, date, source
     """
-    api_key = _get_api_key()
-
-    if not api_key:
-        logging.debug("Serper News skipped: SERPER_API_KEY not set")
+    if not API_KEY:
         return []
 
-    enriched_query = f"{language} {query}" if language else query
-
-    payload = {
-        "q": enriched_query,
-        "num": min(max(num_results, 1), 100),
-        "gl": country,
-        "hl": locale,
-    }
+    full_query = f"{language} {query}".strip() if language else query
 
     try:
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
             response = await client.post(
-                f"{BASE_URL}/news",
-                headers={
-                    "X-API-KEY": api_key,
-                    "Content-Type": "application/json",
-                },
-                json=payload,
+                f"{API_BASE}/news",
+                headers={"X-API-KEY": API_KEY, "Content-Type": "application/json"},
+                json={"q": full_query, "num": min(max_results, 100)},
             )
             response.raise_for_status()
             data = response.json()
 
-        results: List[Dict[str, Any]] = []
-        news_items = data.get("news", [])
+        return [
+            {
+                "title": item.get("title", ""),
+                "url": item.get("link", ""),
+                "snippet": item.get("snippet", ""),
+                "date": item.get("date", ""),
+                "publisher": item.get("source", ""),
+                "source": "serper:news",
+            }
+            for item in data.get("news", [])
+            if item.get("link")
+        ]
 
-        for item in news_items:
-            url = item.get("link")
-            if not url:
-                continue
-
-            results.append(
-                {
-                    "title": item.get("title", "Untitled"),
-                    "url": url,
-                    "snippet": item.get("snippet", ""),
-                    "date": item.get("date", ""),
-                    "source_name": item.get("source", ""),
-                    "image_url": item.get("imageUrl", ""),
-                    "source": "serper_news",
-                }
-            )
-
-        return results
-
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 429:
-            logging.warning("Serper News: Rate limit exceeded")
-        else:
-            logging.exception("Serper News HTTP error")
-        return []
-    except httpx.HTTPError:
-        logging.exception("Serper News HTTP error during search")
-        return []
-    except Exception:
-        logging.exception("Serper News unexpected error")
+    except Exception as e:
+        logger.warning(f"News search failed: {e}")
         return []
 
 
-async def search_serper_images(
-    query: str,
-    language: Optional[str] = None,
-    num_results: int = 10,
-    country: str = "us",
-    locale: str = "en",
-) -> List[Dict[str, Any]]:
-    """Search Serper for images.
-
-    Args:
-        query: Search query
-        language: Optional language context
-        num_results: Number of results (default 10)
-        country: Country code
-        locale: Language code
-
-    Returns:
-        List of image results.
+async def get_related(query: str) -> list[str]:
     """
-    api_key = _get_api_key()
-
-    if not api_key:
-        logging.debug("Serper Images skipped: SERPER_API_KEY not set")
-        return []
-
-    enriched_query = f"{language} {query}" if language else query
-
-    payload = {
-        "q": enriched_query,
-        "num": min(max(num_results, 1), 100),
-        "gl": country,
-        "hl": locale,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-            response = await client.post(
-                f"{BASE_URL}/images",
-                headers={
-                    "X-API-KEY": api_key,
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-        results: List[Dict[str, Any]] = []
-        image_items = data.get("images", [])
-
-        for item in image_items:
-            url = item.get("link")
-            if not url:
-                continue
-
-            results.append(
-                {
-                    "title": item.get("title", "Untitled"),
-                    "url": url,
-                    "image_url": item.get("imageUrl", ""),
-                    "thumbnail_url": item.get("thumbnailUrl", ""),
-                    "source_name": item.get("source", ""),
-                    "source": "serper_images",
-                }
-            )
-
-        return results
-
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 429:
-            logging.warning("Serper Images: Rate limit exceeded")
-        else:
-            logging.exception("Serper Images HTTP error")
-        return []
-    except httpx.HTTPError:
-        logging.exception("Serper Images HTTP error during search")
-        return []
-    except Exception:
-        logging.exception("Serper Images unexpected error")
-        return []
-
-
-async def get_serper_related_searches(
-    query: str,
-    country: str = "us",
-    locale: str = "en",
-) -> List[str]:
-    """Get related search queries from Serper.
+    Get related search suggestions.
 
     Args:
         query: Original search query
-        country: Country code
-        locale: Language code
 
     Returns:
-        List of related search query strings.
+        List of related query strings
     """
-    api_key = _get_api_key()
-
-    if not api_key:
+    if not API_KEY:
         return []
 
-    payload = {
-        "q": query,
-        "gl": country,
-        "hl": locale,
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
             response = await client.post(
-                f"{BASE_URL}/search",
-                headers={
-                    "X-API-KEY": api_key,
-                    "Content-Type": "application/json",
-                },
-                json=payload,
+                f"{API_BASE}/search",
+                headers={"X-API-KEY": API_KEY, "Content-Type": "application/json"},
+                json={"q": query},
             )
             response.raise_for_status()
             data = response.json()
 
-        related = data.get("relatedSearches", [])
-        return [item.get("query", "") for item in related if item.get("query")]
+        return [
+            item.get("query", "")
+            for item in data.get("relatedSearches", [])
+            if item.get("query")
+        ]
 
-    except Exception:
-        logging.exception("Serper related searches error")
+    except Exception as e:
+        logger.warning(f"Related searches failed: {e}")
         return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Backward Compatibility
+# ══════════════════════════════════════════════════════════════════════════════
+
+search_serper = search
+search_serper_news = search_news
+get_serper_related_searches = get_related

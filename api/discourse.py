@@ -1,64 +1,110 @@
 """
-Discourse forums search integration.
+Discourse Forums Search.
 
-Searches popular Discourse forums for technical discussions.
-Uses public JSON endpoints (.json suffix on URLs).
+Search language-specific Discourse communities for technical discussions.
+Uses public JSON endpoints available on all Discourse instances.
+
+Supported Forums: Rust, Elixir, Swift, Julia, Python, and more
+Rate Limits: Varies by forum
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Optional
 
 import httpx
 
+__all__ = ["search", "FORUMS"]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Configuration
+# ══════════════════════════════════════════════════════════════════════════════
+
 API_TIMEOUT = 30.0
 
-# Popular Discourse forums for different tech stacks
-DISCOURSE_FORUMS = {
+logger = logging.getLogger(__name__)
+
+# Language-specific Discourse forums
+FORUMS: dict[str, str] = {
     "rust": "https://users.rust-lang.org",
     "elixir": "https://elixirforum.com",
     "swift": "https://forums.swift.org",
     "julia": "https://discourse.julialang.org",
     "python": "https://discuss.python.org",
-    "javascript": "https://discuss.js.org",
-    "general": "https://meta.discourse.org",
+    "ruby": "https://discuss.rubyonrails.org",
+    "ember": "https://discuss.emberjs.com",
+    "kubernetes": "https://discuss.kubernetes.io",
+    "pytorch": "https://discuss.pytorch.org",
+    "terraform": "https://discuss.hashicorp.com",
 }
 
+DEFAULT_FORUM = "https://meta.discourse.org"
 
-async def search_discourse(query: str, language: str) -> List[Dict[str, Any]]:
-    """Search Discourse forums for language-specific discussions."""
+# ══════════════════════════════════════════════════════════════════════════════
+# Search Function
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+async def search(
+    query: str,
+    language: Optional[str] = None,
+    *,
+    forum_url: Optional[str] = None,
+    max_results: int = 10,
+) -> list[dict[str, Any]]:
+    """
+    Search Discourse forums for discussions.
+
+    Args:
+        query: Search query string
+        language: Programming language to select forum
+        forum_url: Direct forum URL (overrides language selection)
+        max_results: Maximum results to return
+
+    Returns:
+        List of topics with title, url, views, replies, likes
+
+    Example:
+        >>> results = await search("async await", language="rust")
+        >>> results = await search("deployment", forum_url="https://discuss.kubernetes.io")
+    """
+    # Select forum
+    if forum_url:
+        base_url = forum_url.rstrip("/")
+    elif language:
+        base_url = FORUMS.get(language.lower(), DEFAULT_FORUM)
+    else:
+        base_url = DEFAULT_FORUM
+
     try:
-        # Pick forum based on language
-        lang_lower = language.lower()
-        forum_url = DISCOURSE_FORUMS.get(lang_lower, DISCOURSE_FORUMS["general"])
-
-        # Discourse search endpoint
-        url = f"{forum_url}/search.json"
-        params = {
-            "q": query,
-        }
-
         async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
-            response = await client.get(url, params=params)
+            response = await client.get(
+                f"{base_url}/search.json",
+                params={"q": query},
+            )
             response.raise_for_status()
             data = response.json()
 
-            results = []
-            for topic in data.get("topics", [])[:10]:
-                results.append(
-                    {
-                        "title": topic.get("title", ""),
-                        "url": f"{forum_url}/t/{topic.get('slug', '')}/{topic.get('id', '')}",
-                        "views": topic.get("views", 0),
-                        "replies": topic.get("posts_count", 0) - 1,
-                        "likes": topic.get("like_count", 0),
-                        "snippet": topic.get("blurb", "")[:500]
-                        if topic.get("blurb")
-                        else "",
-                        "solved": topic.get("has_accepted_answer", False),
-                    }
-                )
+            return [
+                {
+                    "title": topic.get("title", ""),
+                    "url": f"{base_url}/t/{topic.get('slug', '')}/{topic.get('id', '')}",
+                    "views": topic.get("views", 0),
+                    "replies": max(0, topic.get("posts_count", 1) - 1),
+                    "likes": topic.get("like_count", 0),
+                    "solved": topic.get("has_accepted_answer", False),
+                    "snippet": (topic.get("blurb") or "")[:500],
+                    "source": f"discourse:{base_url.split('//')[1].split('/')[0]}",
+                }
+                for topic in data.get("topics", [])[:max_results]
+            ]
 
-            return results
     except Exception as e:
-        logging.warning(f"Discourse search failed: {e}")
+        logger.warning(f"Search failed on {base_url}: {e}")
         return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Backward Compatibility
+# ══════════════════════════════════════════════════════════════════════════════
+
+search_discourse = search

@@ -1,42 +1,34 @@
 """
-GitHub Issues and Discussions search.
+GitHub Issues & Discussions Search.
 
-Searches GitHub's issue tracker API sorted by reactions
-to find the most relevant community discussions.
+Search GitHub's issue tracker sorted by community reactions
+to find the most relevant discussions and solutions.
+
+API: https://docs.github.com/en/rest/search
+Rate Limits: 10/min (anonymous), 30/min (authenticated)
 """
 
 import logging
-from typing import Any, Dict, List
+import os
+from typing import Any, Optional
 
 import httpx
 
+__all__ = ["search"]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Configuration
+# ══════════════════════════════════════════════════════════════════════════════
+
+API_BASE = "https://api.github.com"
 API_TIMEOUT = 30.0
+API_TOKEN = os.getenv("GITHUB_TOKEN")
 
+logger = logging.getLogger(__name__)
 
-def _simplify_github_query(query: str, language: str, max_length: int = 256) -> str:
-    """
-    Simplify and truncate a GitHub search query to avoid 422 errors.
-
-    GitHub API has query length limits. This function extracts the most
-    important keywords and ensures the query stays within limits.
-
-    Args:
-        query: The original search query
-        language: Programming language
-        max_length: Maximum query length (default 256 chars)
-
-    Returns:
-        Simplified query string
-    """
-    # Build base query with language filter
-    base = f"language:{language} is:issue"
-    remaining = max_length - len(base) - 1  # -1 for space
-
-    if remaining <= 0:
-        return base
-
-    # Extract important keywords (remove common words)
-    stopwords = {
+# Words to filter from queries (too generic)
+STOPWORDS = frozenset(
+    {
         "the",
         "a",
         "an",
@@ -66,77 +58,110 @@ def _simplify_github_query(query: str, language: str, max_length: int = 256) -> 
         "code",
         "example",
     }
+)
 
-    # Tokenize and filter
-    words = query.split()
-    important_words = []
-
-    for word in words:
-        clean_word = word.strip().lower()
-        # Keep technical terms, version numbers, and capitalized words
-        if (
-            (len(clean_word) > 2 and clean_word not in stopwords)
-            or any(c.isdigit() for c in clean_word)
-            or word[0].isupper()
-        ):
-            important_words.append(word)
-
-    # Join words until we hit the length limit
-    simplified_query = ""
-    for word in important_words[:10]:  # Limit to 10 most important words
-        test_query = f"{simplified_query} {word}".strip()
-        if len(test_query) <= remaining:
-            simplified_query = test_query
-        else:
-            break
-
-    return f"{simplified_query} {base}".strip()
+# ══════════════════════════════════════════════════════════════════════════════
+# Search Function
+# ══════════════════════════════════════════════════════════════════════════════
 
 
-async def search_github(query: str, language: str) -> List[Dict[str, Any]]:
+async def search(
+    query: str,
+    language: Optional[str] = None,
+    *,
+    max_results: int = 15,
+) -> list[dict[str, Any]]:
     """
     Search GitHub issues and discussions.
 
-    This function automatically simplifies overly complex queries to avoid
-    GitHub API 422 errors (query too long).
+    Args:
+        query: Search query string
+        language: Programming language filter
+        max_results: Maximum results to return
+
+    Returns:
+        List of issues with title, url, state, comments, snippet
+
+    Example:
+        >>> results = await search("memory leak", language="python")
     """
+    # Build simplified query (GitHub has 256 char limit)
+    search_query = _build_query(query, language)
+
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if API_TOKEN:
+        headers["Authorization"] = f"token {API_TOKEN}"
+
+    params = {
+        "q": search_query,
+        "sort": "reactions",
+        "order": "desc",
+        "per_page": min(max_results, 100),
+    }
+
     try:
-        url = "https://api.github.com/search/issues"
-
-        # Simplify query to avoid 422 errors
-        simplified_query = _simplify_github_query(query, language, max_length=256)
-
-        params = {
-            "q": simplified_query,
-            "sort": "reactions",
-            "order": "desc",
-            "per_page": 15,
-        }
-
         async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
-            response = await client.get(url, params=params)
+            response = await client.get(
+                f"{API_BASE}/search/issues",
+                params=params,
+                headers=headers,
+            )
             response.raise_for_status()
             data = response.json()
 
-            results = []
-            for item in data.get("items", []):
-                results.append(
-                    {
-                        "title": item.get("title", ""),
-                        "url": item.get("html_url", ""),
-                        "state": item.get("state", ""),
-                        "comments": item.get("comments", 0),
-                        "snippet": (item.get("body", "") or "")[:1000],
-                    }
-                )
-            return results
+            return [
+                {
+                    "title": item.get("title", ""),
+                    "url": item.get("html_url", ""),
+                    "state": item.get("state", ""),
+                    "comments": item.get("comments", 0),
+                    "reactions": item.get("reactions", {}).get("total_count", 0),
+                    "snippet": (item.get("body") or "")[:1000],
+                    "source": "github",
+                }
+                for item in data.get("items", [])
+            ]
+
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 422:
-            logging.error(f"GitHub query too complex (422): {query[:100]}...")
-            # Return empty results with a logged error
-            return []
-        logging.error(f"GitHub HTTP error {e.response.status_code}: {str(e)}")
+            logger.warning(f"Query too complex: {query[:50]}...")
+        else:
+            logger.warning(f"HTTP {e.response.status_code}")
         return []
     except Exception as e:
-        logging.error(f"GitHub search failed: {str(e)}")
+        logger.error(f"Search failed: {e}")
         return []
+
+
+def _build_query(query: str, language: Optional[str], max_length: int = 256) -> str:
+    """Build a simplified GitHub search query within length limits."""
+    suffix = f"is:issue{f' language:{language}' if language else ''}"
+    available = max_length - len(suffix) - 1
+
+    # Extract important keywords
+    words = []
+    for word in query.split()[:10]:
+        clean = word.strip().lower()
+        is_technical = (
+            len(clean) > 2 and clean not in STOPWORDS or any(c.isdigit() for c in clean)
+        )
+        if is_technical:
+            words.append(word)
+
+    # Build query within limit
+    result = ""
+    for word in words:
+        test = f"{result} {word}".strip()
+        if len(test) <= available:
+            result = test
+        else:
+            break
+
+    return f"{result} {suffix}".strip()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Backward Compatibility
+# ══════════════════════════════════════════════════════════════════════════════
+
+search_github = search

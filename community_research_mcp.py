@@ -78,31 +78,23 @@ except ImportError:
         return {"per_source": {}, "totals": {}}
 
 
-# Import enhanced MCP utilities for production-grade reliability
-try:
-    from enhanced_mcp_utilities import (
-        QualityScorer,
-        RetryStrategy,
-        deduplicate_results,
-        format_metrics_report,
-        get_api_metrics,
-        get_circuit_breaker,
-        get_performance_monitor,
-        resilient_api_call,
-    )
+# Import core utilities for reliability and quality
+from core import (
+    CircuitState,
+    QualityScorer,
+    deduplicate_results,
+    format_metrics_report,
+    get_api_metrics,
+    get_circuit_breaker,
+    get_performance_monitor,
+    resilient_api_call,
+)
 
-    ENHANCED_UTILITIES_AVAILABLE = True
-    # Initialize quality scorer with optional preset
-    _quality_preset = os.getenv("QUALITY_SCORER_PRESET", "balanced")
-    _quality_scorer = QualityScorer(_quality_preset)
-    print("Enhanced utilities active (with circuit breakers)")
-except ImportError:
-    ENHANCED_UTILITIES_AVAILABLE = False
-    _quality_scorer = None
-    print("Note: Enhanced utilities unavailable")
+ENHANCED_UTILITIES_AVAILABLE = True
+_quality_preset = os.getenv("QUALITY_SCORER_PRESET", "balanced")
+_quality_scorer = QualityScorer(_quality_preset)
 
-# Import core modules
-# Import refactored modules
+# Import API integrations
 from api import (
     search_brave,
     search_discourse,
@@ -114,6 +106,8 @@ from api import (
     search_stackoverflow,
     search_tavily,
 )
+
+# Import models and utils
 from models import CommunitySearchInput, DeepAnalyzeInput, ResponseFormat, ThinkingMode
 from utils import check_rate_limit, get_cache_key, get_cached_result, set_cached_result
 
@@ -1864,8 +1858,7 @@ async def aggregate_search_results(
 
     if perf_monitor:
         search_duration = time.time() - start_time
-        perf_monitor.record_search_time(search_duration)
-        perf_monitor.total_results_found += total_result_count(deduped_results)
+        perf_monitor.record_search(search_duration, total_result_count(deduped_results))
 
     deduped_results["_meta"] = {
         "audit_log": audit_log,
@@ -2002,6 +1995,61 @@ def compute_multi_factor_score(
 
     # Apply diversity penalty so one domain doesn't dominate
     return max(0.0, min(1.0, base - diversity_penalty))
+
+
+class ResultType(Enum):
+    """Classification of search result types."""
+
+    HOW_TO = "how_to"
+    CODE = "code"
+    WARNING = "warning"
+    DISCUSSION = "discussion"
+    OTHER = "other"
+
+
+def classify_result(item: Dict[str, Any], source: str) -> ResultType:
+    """Classify a search result into a category based on content."""
+    title = (item.get("title") or "").lower()
+    snippet = (item.get("snippet") or item.get("body") or "").lower()
+    text = f"{title} {snippet}"
+
+    # Check for code indicators
+    if "```" in text or "<code" in text or "def " in text or "function " in text:
+        return ResultType.CODE
+
+    # Check for warning/pitfall indicators
+    warning_terms = [
+        "warning",
+        "pitfall",
+        "gotcha",
+        "don't",
+        "avoid",
+        "mistake",
+        "error",
+        "bug",
+        "issue",
+    ]
+    if any(term in text for term in warning_terms):
+        return ResultType.WARNING
+
+    # Check for how-to indicators
+    howto_terms = [
+        "how to",
+        "tutorial",
+        "guide",
+        "step by step",
+        "example",
+        "implement",
+    ]
+    if any(term in text for term in howto_terms):
+        return ResultType.HOW_TO
+
+    # Check for discussion indicators
+    discussion_terms = ["discussion", "opinion", "thoughts", "debate", "versus", "vs"]
+    if any(term in text for term in discussion_terms):
+        return ResultType.DISCUSSION
+
+    return ResultType.OTHER
 
 
 def build_all_star_index(
@@ -3549,9 +3597,7 @@ async def validated_research(
 
     # Apply quality scoring if available
     if ENHANCED_UTILITIES_AVAILABLE and _quality_scorer and "findings" in synthesis:
-        synthesis["findings"] = _quality_scorer.score_findings_batch(
-            synthesis["findings"]
-        )
+        synthesis["findings"] = _quality_scorer.score_batch(synthesis["findings"])
 
     # Add validation framework for calling LLM
     validation_framework = {
@@ -3853,6 +3899,83 @@ async def get_server_context() -> str:
     return json.dumps(context, indent=2)
 
 
+async def community_search(
+    language: str = None,
+    topic: str = None,
+    goal: Optional[str] = None,
+    current_setup: Optional[str] = None,
+    response_format: str = "markdown",
+    thinking_mode: str = "balanced",
+    expanded_mode: bool = False,
+    use_fixtures: bool = False,
+    *,
+    params: CommunitySearchInput = None,
+) -> str:
+    """
+    Search community resources for solutions. Can be called directly with keyword args
+    or via MCP with a CommunitySearchInput params object.
+
+    Direct call example:
+        result = await community_search(
+            language="Python",
+            topic="HIPAA PHI redaction regex patterns",
+            goal="Find best practices for redacting sensitive health data"
+        )
+
+    MCP call example:
+        result = await community_search(params=CommunitySearchInput(...))
+    """
+    # Handle both direct kwargs and MCP params object
+    if params is not None:
+        language = params.language
+        topic = params.topic
+        goal = params.goal
+        current_setup = params.current_setup
+        response_format = (
+            params.response_format.value
+            if hasattr(params.response_format, "value")
+            else params.response_format
+        )
+        thinking_mode = (
+            params.thinking_mode.value
+            if hasattr(params.thinking_mode, "value")
+            else params.thinking_mode
+        )
+        expanded_mode = params.expanded_mode
+        use_fixtures = getattr(params, "use_fixtures", False)
+
+    # Validate required fields
+    if not language or not topic:
+        return json.dumps(
+            {
+                "error": "Missing required parameters: 'language' and 'topic' are required",
+                "usage": "await community_search(language='Python', topic='your specific topic here')",
+            },
+            indent=2,
+        )
+
+    # Create a simple namespace object to hold the params for the rest of the function
+    class Params:
+        pass
+
+    p = Params()
+    p.language = language
+    p.topic = topic
+    p.goal = goal
+    p.current_setup = current_setup
+    p.response_format = (
+        ResponseFormat(response_format)
+        if isinstance(response_format, str)
+        else response_format
+    )
+    p.thinking_mode = thinking_mode
+    p.expanded_mode = expanded_mode
+    p.use_fixtures = use_fixtures
+
+    # Now continue with the actual implementation using 'p' as params
+    return await _community_search_impl(p)
+
+
 @mcp.tool(
     name="community_search",
     annotations={
@@ -3863,7 +3986,7 @@ async def get_server_context() -> str:
         "openWorldHint": True,
     },
 )
-async def community_search(params: CommunitySearchInput) -> str:
+async def _community_search_mcp_wrapper(params: CommunitySearchInput) -> str:
     """
     Find STREET-SMART solutions from developers who've already fought through your exact problem.
 
@@ -3936,6 +4059,12 @@ async def community_search(params: CommunitySearchInput) -> str:
     Returns:
         JSON or Markdown string with structured research findings and actionable guidance.
     """
+    # Delegate to the main implementation that supports both MCP and direct calls
+    return await community_search(params=params)
+
+
+async def _community_search_impl(params) -> str:
+    """Internal implementation - accepts a params-like object with language, topic, goal, etc."""
     if not check_rate_limit("community_search"):
         return json.dumps(
             {
@@ -4103,7 +4232,7 @@ async def community_search(params: CommunitySearchInput) -> str:
                 and _quality_scorer
                 and "findings" in synthesis
             ):
-                synthesis["findings"] = _quality_scorer.score_findings_batch(
+                synthesis["findings"] = _quality_scorer.score_batch(
                     synthesis["findings"]
                 )
 
@@ -5027,6 +5156,69 @@ async def streaming_community_search(
         return f"Error during streaming search: {str(e)}\n\nFalling back to standard search..."
 
 
+async def deep_community_search(
+    language: str = None,
+    topic: str = None,
+    goal: Optional[str] = None,
+    current_setup: Optional[str] = None,
+    *,
+    params: CommunitySearchInput = None,
+) -> str:
+    """
+    Deep community search - can be called directly with keyword args or via MCP.
+
+    Direct call example:
+        result = await deep_community_search(
+            language="Python",
+            topic="FastAPI async background tasks",
+            goal="Process long-running tasks"
+        )
+    """
+    # Handle both direct kwargs and MCP params object
+    if params is not None:
+        language = params.language
+        topic = params.topic
+        goal = params.goal
+        current_setup = params.current_setup
+
+    # Validate required fields
+    if not language or not topic:
+        return json.dumps(
+            {
+                "error": "Missing required parameters: 'language' and 'topic' are required",
+                "usage": "await deep_community_search(language='Python', topic='your topic')",
+            },
+            indent=2,
+        )
+
+    # Check rate limit
+    if not check_rate_limit("deep_community_search"):
+        return json.dumps({"error": "Rate limit exceeded."}, indent=2)
+
+    try:
+        # Step 1: Initial Search
+        print(f"[Deep Search] Starting initial search for: {topic}")
+        initial_query = f"{language} {topic}"
+        if goal:
+            initial_query += f" {goal}"
+
+        initial_results = await aggregate_search_results(initial_query, language)
+
+        # Step 2: Generate follow-up queries for comprehensive coverage
+        print("[Deep Search] Generating follow-up search queries...")
+
+        # Continue with rest of implementation...
+        return await _deep_community_search_impl(
+            language, topic, goal, current_setup, initial_results
+        )
+
+    except Exception as e:
+        logging.error(f"Deep search failed: {str(e)}")
+        return json.dumps(
+            {"error": f"Deep search failed: {str(e)}", "findings": []}, indent=2
+        )
+
+
 @mcp.tool(
     name="deep_community_search",
     annotations={
@@ -5037,7 +5229,7 @@ async def streaming_community_search(
         "openWorldHint": True,
     },
 )
-async def deep_community_search(params: CommunitySearchInput) -> str:
+async def _deep_community_search_mcp(params: CommunitySearchInput) -> str:
     """
     Deep dive into the programming community's collective wisdom and hard-won solutions.
 
@@ -5079,26 +5271,21 @@ async def deep_community_search(params: CommunitySearchInput) -> str:
         )
         result = await deep_community_search(params)
     """
-    # Extract parameters from the input object
-    language = params.language
-    topic = params.topic
-    goal = params.goal
-    current_setup = params.current_setup
-    # Check rate limit
-    if not check_rate_limit("deep_community_search"):
-        return json.dumps({"error": "Rate limit exceeded."}, indent=2)
+    # Delegate to the main implementation
+    return await deep_community_search(params=params)
 
+
+async def _deep_community_search_impl(
+    language: str,
+    topic: str,
+    goal: Optional[str],
+    current_setup: Optional[str],
+    initial_results: dict,
+) -> str:
+    """Internal implementation for deep_community_search after initial search."""
     try:
-        # Step 1: Initial Search
-        print(f"🔍 [Deep Search] Starting initial search for: {topic}")
-        initial_query = f"{language} {topic}"
-        if goal:
-            initial_query += f" {goal}"
-
-        initial_results = await aggregate_search_results(initial_query, language)
-
         # Step 2: Generate follow-up queries for comprehensive coverage
-        print("🤔 [Deep Search] Generating follow-up search queries...")
+        print("[Deep Search] Generating follow-up search queries...")
 
         # Use deterministic queries - gap analysis is delegated to the host LLM
         follow_up_queries = [
@@ -5526,6 +5713,933 @@ def _simplify_for_github(topic: str, language: str) -> Dict[str, str]:
         "simplified": f"{language} {simplified}",
         "removed_words": len(words) - len(key_terms),
     }
+
+
+# ============================================================================
+# NEW: Source Status, Rate Limits, Related Searches & Export Tools
+# ============================================================================
+
+
+@mcp.tool(
+    name="get_source_status",
+    annotations={
+        "title": "Get Source Health Status",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def get_source_status() -> str:
+    """
+    Get real-time health status of all search sources and their circuit breakers.
+
+    Shows which APIs are healthy, degraded, or failing - helping you understand
+    why searches might return fewer results than expected.
+
+    **What This Shows:**
+    - Circuit breaker state (CLOSED=healthy, OPEN=failing, HALF_OPEN=recovering)
+    - Failure counts and cooldown timers
+    - API key configuration status
+    - Last known response times
+
+    **Marketing Value:** "Transparent health monitoring - know exactly what's working"
+
+    Returns:
+        str: JSON status report for all sources
+
+    Example Output:
+        {
+          "sources": {
+            "stackoverflow": {"status": "healthy", "circuit": "CLOSED"},
+            "github": {"status": "degraded", "circuit": "HALF_OPEN", "failures": 3},
+            "reddit": {"status": "failing", "circuit": "OPEN", "retry_in": "4m 30s"}
+          }
+        }
+    """
+    source_config = CONFIG.get("sources", {})
+
+    # All possible sources
+    all_sources = {
+        "stackoverflow": {
+            "requires_key": False,
+            "enabled": source_config.get("stackoverflow", {}).get("enabled", True),
+        },
+        "github": {
+            "requires_key": False,
+            "enabled": source_config.get("github", {}).get("enabled", True),
+        },
+        "reddit": {
+            "requires_key": False,
+            "enabled": source_config.get("reddit", {}).get("enabled", True),
+        },
+        "hackernews": {
+            "requires_key": False,
+            "enabled": source_config.get("hackernews", {}).get("enabled", True),
+        },
+        "lobsters": {
+            "requires_key": False,
+            "enabled": source_config.get("lobsters", {}).get("enabled", True),
+        },
+        "discourse": {
+            "requires_key": False,
+            "enabled": source_config.get("discourse", {}).get("enabled", True),
+        },
+        "brave": {
+            "requires_key": True,
+            "key_set": bool(BRAVE_SEARCH_API_KEY),
+            "enabled": source_config.get("brave", {}).get("enabled", True),
+        },
+        "serper": {
+            "requires_key": True,
+            "key_set": bool(SERPER_API_KEY),
+            "enabled": source_config.get("serper", {}).get("enabled", True),
+        },
+        "tavily": {
+            "requires_key": True,
+            "key_set": bool(TAVILY_API_KEY),
+            "enabled": source_config.get("tavily", {}).get("enabled", True),
+        },
+        "firecrawl": {
+            "requires_key": True,
+            "key_set": bool(FIRECRAWL_API_KEY),
+            "enabled": source_config.get("firecrawl", {}).get("enabled", True),
+        },
+    }
+
+    status_report = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "sources": {},
+        "summary": {
+            "healthy": 0,
+            "degraded": 0,
+            "failing": 0,
+            "disabled": 0,
+            "missing_key": 0,
+        },
+    }
+
+    for source_name, config in all_sources.items():
+        source_status = {
+            "enabled": config["enabled"],
+            "requires_api_key": config.get("requires_key", False),
+        }
+
+        # Check if API key is required but missing
+        if config.get("requires_key") and not config.get("key_set"):
+            source_status["status"] = "missing_key"
+            source_status["message"] = f"Set {source_name.upper()}_API_KEY in .env"
+            status_report["summary"]["missing_key"] += 1
+        elif not config["enabled"]:
+            source_status["status"] = "disabled"
+            source_status["message"] = "Disabled in config.json"
+            status_report["summary"]["disabled"] += 1
+        else:
+            # Check circuit breaker status
+            if ENHANCED_UTILITIES_AVAILABLE:
+                cb = get_circuit_breaker(source_name)
+                source_status["circuit_breaker"] = {
+                    "state": cb.state.value,
+                    "failure_count": cb.failure_count,
+                    "failure_threshold": cb.failure_threshold,
+                }
+
+                if cb.state == CircuitState.CLOSED:
+                    source_status["status"] = "healthy"
+                    source_status["message"] = "Operating normally"
+                    status_report["summary"]["healthy"] += 1
+                elif cb.state == CircuitState.HALF_OPEN:
+                    source_status["status"] = "degraded"
+                    source_status["message"] = "Recovering from failures"
+                    status_report["summary"]["degraded"] += 1
+                elif cb.state == CircuitState.OPEN:
+                    source_status["status"] = "failing"
+                    remaining = (
+                        cb.timeout - (time.time() - cb.opened_at) if cb.opened_at else 0
+                    )
+                    mins, secs = divmod(int(remaining), 60)
+                    source_status["message"] = (
+                        f"Circuit open - retry in {mins}m {secs}s"
+                    )
+                    source_status["circuit_breaker"]["retry_in_seconds"] = int(
+                        remaining
+                    )
+                    status_report["summary"]["failing"] += 1
+            else:
+                source_status["status"] = "healthy"
+                source_status["message"] = "Operating normally (no circuit breaker)"
+                status_report["summary"]["healthy"] += 1
+
+        status_report["sources"][source_name] = source_status
+
+    # Add helpful tips
+    status_report["tips"] = []
+    if status_report["summary"]["failing"] > 0:
+        status_report["tips"].append(
+            "Some sources are failing. Wait for circuit breaker cooldown or check API quotas."
+        )
+    if status_report["summary"]["missing_key"] > 0:
+        status_report["tips"].append(
+            "Configure missing API keys in .env file for broader search coverage."
+        )
+
+    return json.dumps(status_report, indent=2)
+
+
+@mcp.tool(
+    name="get_rate_limit_status",
+    annotations={
+        "title": "Get API Rate Limit Status",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def get_rate_limit_status() -> str:
+    """
+    Display remaining API quota and rate limit status for all sources.
+
+    Shows how many requests you have left before hitting rate limits,
+    helping you plan research sessions and avoid interruptions.
+
+    **Rate Limits by Source (Free Tier):**
+    - Stack Overflow: 300 requests/day (without key), 10,000/day (with key)
+    - GitHub: 60 requests/hour (without token), 5,000/hour (with token)
+    - Reddit: 60 requests/minute (public API)
+    - HackerNews: No official limit (Algolia API)
+    - Brave/Serper/Tavily: Varies by plan
+
+    **Marketing Value:** "Never hit a wall mid-research - know your limits"
+
+    Returns:
+        str: JSON with rate limit status for each source
+
+    Example Output:
+        {
+          "stackoverflow": {"used": 45, "limit": 300, "remaining": 255, "resets_in": "18h 30m"},
+          "github": {"used": 12, "limit": 60, "remaining": 48, "resets_in": "45m"}
+        }
+    """
+    # Known rate limits for each source (free tier defaults)
+    rate_limits = {
+        "stackoverflow": {
+            "requests_per_period": 300,
+            "period": "day",
+            "period_seconds": 86400,
+            "with_key": 10000,
+            "has_key": bool(os.getenv("STACKOVERFLOW_API_KEY")),
+        },
+        "github": {
+            "requests_per_period": 60,
+            "period": "hour",
+            "period_seconds": 3600,
+            "with_key": 5000,
+            "has_key": bool(os.getenv("GITHUB_TOKEN")),
+        },
+        "reddit": {
+            "requests_per_period": 60,
+            "period": "minute",
+            "period_seconds": 60,
+            "with_key": 600,
+            "has_key": reddit_authenticated,
+        },
+        "hackernews": {
+            "requests_per_period": 1000,
+            "period": "hour",
+            "period_seconds": 3600,
+            "note": "Algolia API - generous limits",
+        },
+        "lobsters": {
+            "requests_per_period": 100,
+            "period": "hour",
+            "period_seconds": 3600,
+            "note": "Be respectful - small community site",
+        },
+        "brave": {
+            "requests_per_period": 2000,
+            "period": "month",
+            "period_seconds": 2592000,
+            "has_key": bool(BRAVE_SEARCH_API_KEY),
+            "note": "Free tier: 2000/month",
+        },
+        "serper": {
+            "requests_per_period": 2500,
+            "period": "month",
+            "period_seconds": 2592000,
+            "has_key": bool(SERPER_API_KEY),
+            "note": "Free tier: 2500/month",
+        },
+        "tavily": {
+            "requests_per_period": 1000,
+            "period": "month",
+            "period_seconds": 2592000,
+            "has_key": bool(TAVILY_API_KEY),
+            "note": "Free tier: 1000/month",
+        },
+    }
+
+    now = time.time()
+    status = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "sources": {},
+        "recommendations": [],
+    }
+
+    # Get internal rate limit tracker data
+    for source, limits in rate_limits.items():
+        source_status = {
+            "limit": limits["requests_per_period"],
+            "period": limits["period"],
+            "authenticated": limits.get("has_key", False),
+        }
+
+        if limits.get("has_key"):
+            source_status["limit"] = limits.get(
+                "with_key", limits["requests_per_period"]
+            )
+            source_status["tier"] = "authenticated"
+        else:
+            source_status["tier"] = "free"
+
+        # Check internal tracking
+        tool_key = f"community_search_{source}"
+        if tool_key in _rate_limit_tracker:
+            recent_calls = [
+                ts
+                for ts in _rate_limit_tracker[tool_key]
+                if now - ts < limits["period_seconds"]
+            ]
+            source_status["used_recently"] = len(recent_calls)
+            source_status["remaining_estimate"] = max(
+                0, source_status["limit"] - len(recent_calls)
+            )
+
+            if recent_calls:
+                oldest_call = min(recent_calls)
+                resets_in = limits["period_seconds"] - (now - oldest_call)
+                mins, secs = divmod(int(resets_in), 60)
+                hours, mins = divmod(mins, 60)
+                if hours > 0:
+                    source_status["resets_in"] = f"{hours}h {mins}m"
+                else:
+                    source_status["resets_in"] = f"{mins}m {secs}s"
+        else:
+            source_status["used_recently"] = 0
+            source_status["remaining_estimate"] = source_status["limit"]
+            source_status["resets_in"] = "N/A"
+
+        if limits.get("note"):
+            source_status["note"] = limits["note"]
+
+        # Calculate health indicator
+        if source_status["remaining_estimate"] > source_status["limit"] * 0.5:
+            source_status["health"] = "good"
+        elif source_status["remaining_estimate"] > source_status["limit"] * 0.1:
+            source_status["health"] = "moderate"
+        else:
+            source_status["health"] = "low"
+
+        status["sources"][source] = source_status
+
+    # Add recommendations
+    low_sources = [s for s, d in status["sources"].items() if d.get("health") == "low"]
+    if low_sources:
+        status["recommendations"].append(
+            f"Consider waiting before querying: {', '.join(low_sources)}"
+        )
+
+    unauthenticated = [
+        s
+        for s, d in status["sources"].items()
+        if not d.get("authenticated") and d.get("tier") == "free"
+    ]
+    if unauthenticated:
+        status["recommendations"].append(
+            f"Add API keys for higher limits: {', '.join(unauthenticated[:3])}"
+        )
+
+    return json.dumps(status, indent=2)
+
+
+@mcp.tool(
+    name="search_with_progress",
+    annotations={
+        "title": "Search with Live Progress Updates",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def search_with_progress(
+    language: str,
+    topic: str,
+    goal: Optional[str] = None,
+    current_setup: Optional[str] = None,
+) -> str:
+    """
+    Search community resources with detailed progress updates.
+
+    Same as community_search but returns real-time status updates showing
+    which sources are being queried and their results as they complete.
+
+    **Marketing Value:** "See your search happening live - reduces perceived latency"
+
+    **Progress Format:**
+    ```
+    [1/6] Searching Stack Overflow... done (12 results, 418ms)
+    [2/6] Searching GitHub... done (8 results, 623ms)
+    [3/6] Searching Reddit... done (5 results, 892ms)
+    ...
+    ```
+
+    Args:
+        language (str): Programming language (e.g., "Python", "JavaScript")
+        topic (str): Specific topic (min 10 chars)
+        goal (Optional[str]): What you want to achieve
+        current_setup (Optional[str]): Your current tech stack
+
+    Returns:
+        str: Progress log followed by search results in JSON format
+    """
+    if not check_rate_limit("search_with_progress"):
+        return json.dumps({"error": "Rate limit exceeded."}, indent=2)
+
+    # Validate topic
+    valid, msg = validate_topic_specificity(topic)
+    if not valid:
+        return json.dumps({"error": msg}, indent=2)
+
+    progress_log = []
+    start_time = time.time()
+
+    # Get source configuration
+    source_config = CONFIG.get("sources", {})
+
+    # Define sources to search
+    sources_to_search = []
+    if source_config.get("stackoverflow", {}).get("enabled", True):
+        sources_to_search.append(("stackoverflow", search_stackoverflow, True))
+    if source_config.get("github", {}).get("enabled", True):
+        sources_to_search.append(("github", search_github, True))
+    if source_config.get("reddit", {}).get("enabled", True):
+        sources_to_search.append(("reddit", search_reddit, True))
+    if source_config.get("hackernews", {}).get("enabled", True):
+        sources_to_search.append(("hackernews", search_hackernews, False))
+    if source_config.get("lobsters", {}).get("enabled", True):
+        sources_to_search.append(("lobsters", search_lobsters, False))
+    if source_config.get("discourse", {}).get("enabled", True):
+        sources_to_search.append(("discourse", search_discourse, True))
+
+    # Add premium sources if configured
+    if BRAVE_SEARCH_API_KEY and source_config.get("brave", {}).get("enabled", True):
+        sources_to_search.append(("brave", search_brave, True))
+    if SERPER_API_KEY and source_config.get("serper", {}).get("enabled", True):
+        sources_to_search.append(("serper", search_serper, True))
+    if TAVILY_API_KEY and source_config.get("tavily", {}).get("enabled", True):
+        sources_to_search.append(("tavily", search_tavily, True))
+
+    total_sources = len(sources_to_search)
+    progress_log.append(f"Starting search across {total_sources} sources...")
+    progress_log.append("")
+
+    # Enriched query
+    enrichment = enrich_query(language, topic, goal)
+    query = enrichment.get("enriched_query", f"{language} {topic}")
+
+    # Run searches with progress tracking
+    all_results = {}
+
+    async def search_source(idx: int, name: str, func, needs_lang: bool):
+        source_start = time.time()
+        try:
+            if ENHANCED_UTILITIES_AVAILABLE:
+                cb = get_circuit_breaker(name)
+                if needs_lang:
+                    results = await cb.call_async(
+                        resilient_api_call, func, query, language
+                    )
+                else:
+                    results = await cb.call_async(resilient_api_call, func, query)
+            else:
+                if needs_lang:
+                    results = await func(query, language)
+                else:
+                    results = await func(query)
+
+            duration_ms = (time.time() - source_start) * 1000
+            count = len(results) if results else 0
+            status = f"[{idx}/{total_sources}] {name.title():15} ... done ({count} results, {duration_ms:.0f}ms)"
+            return name, results or [], status, True
+        except Exception as e:
+            duration_ms = (time.time() - source_start) * 1000
+            status = f"[{idx}/{total_sources}] {name.title():15} ... failed ({str(e)[:30]}, {duration_ms:.0f}ms)"
+            return name, [], status, False
+
+    # Run all searches in parallel
+    tasks = [
+        search_source(i + 1, name, func, needs_lang)
+        for i, (name, func, needs_lang) in enumerate(sources_to_search)
+    ]
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Process results
+    successful = 0
+    total_items = 0
+
+    for result in results:
+        if isinstance(result, Exception):
+            progress_log.append(f"[?/?] Unknown source ... error: {str(result)[:50]}")
+            continue
+
+        name, items, status, success = result
+        progress_log.append(status)
+        all_results[name] = items
+        if success:
+            successful += 1
+            total_items += len(items)
+
+    # Summary
+    total_time = (time.time() - start_time) * 1000
+    progress_log.append("")
+    progress_log.append(
+        f"Search complete: {total_items} results from {successful}/{total_sources} sources ({total_time:.0f}ms)"
+    )
+    progress_log.append("")
+    progress_log.append("---")
+    progress_log.append("")
+
+    # Now synthesize results
+    if ENHANCED_UTILITIES_AVAILABLE:
+        all_results = deduplicate_results(all_results)
+
+    synthesis = await synthesize_with_llm(
+        all_results, topic, language, goal, current_setup
+    )
+
+    if ENHANCED_UTILITIES_AVAILABLE and _quality_scorer and "findings" in synthesis:
+        synthesis["findings"] = _quality_scorer.score_batch(synthesis["findings"])
+
+    # Build response
+    response = {
+        "progress_log": "\n".join(progress_log),
+        "search_summary": {
+            "total_results": total_items,
+            "sources_successful": successful,
+            "sources_total": total_sources,
+            "total_time_ms": round(total_time, 0),
+        },
+        "findings": synthesis.get("findings", [])[:15],
+        "synthesis_instructions": synthesis.get("synthesis_instructions", {}),
+    }
+
+    return json.dumps(response, indent=2)
+
+
+@mcp.tool(
+    name="get_related_searches",
+    annotations={
+        "title": "Get Related Search Suggestions",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_related_searches(
+    query: str,
+    language: Optional[str] = None,
+) -> str:
+    """
+    Get "People also searched for..." suggestions to discover related topics.
+
+    Expands your research by finding related queries that other developers
+    have searched for. Great for discovering adjacent solutions, alternative
+    approaches, or related problems you hadn't considered.
+
+    **Marketing Value:** "Discover what you didn't know to ask"
+
+    Args:
+        query (str): Your original search query
+        language (Optional[str]): Programming language context
+
+    Returns:
+        str: JSON with related search suggestions from multiple sources
+
+    Example:
+        query="FastAPI background tasks"
+        Returns: ["FastAPI Celery integration", "FastAPI async workers",
+                  "FastAPI Redis queue", "FastAPI vs Django async"]
+    """
+    if not check_rate_limit("get_related_searches"):
+        return json.dumps({"error": "Rate limit exceeded. Please wait."}, indent=2)
+
+    # Check cache
+    cache_key = get_cache_key("related_searches", query=query, language=language)
+    cached = get_cached_result(cache_key)
+    if cached:
+        return cached
+
+    full_query = f"{language} {query}" if language else query
+    related_searches = []
+    sources_checked = []
+
+    # Try Serper API first (has explicit related searches)
+    if SERPER_API_KEY:
+        try:
+            from api.serper import get_serper_related_searches
+
+            serper_related = await get_serper_related_searches(full_query)
+            if serper_related:
+                related_searches.extend(serper_related)
+                sources_checked.append("serper")
+        except Exception as e:
+            logging.warning(f"Serper related searches failed: {e}")
+
+    # Generate query variations as fallback/supplement
+    enrichment = enrich_query(language or "", query, None)
+    expanded = enrichment.get("expanded_queries", [])
+
+    # Add expanded queries as related (but dedupe)
+    for eq in expanded:
+        if eq not in related_searches and eq != full_query:
+            related_searches.append(eq)
+
+    # Generate additional related topics based on common patterns
+    common_suffixes = [
+        "best practices",
+        "common issues",
+        "vs alternatives",
+        "performance optimization",
+        "production deployment",
+        "error handling",
+        "testing strategies",
+    ]
+
+    for suffix in common_suffixes[:4]:  # Limit to 4 suggestions
+        suggestion = f"{query} {suffix}"
+        if suggestion not in related_searches:
+            related_searches.append(suggestion)
+
+    # Deduplicate and limit
+    seen = set()
+    unique_related = []
+    for r in related_searches:
+        r_normalized = r.lower().strip()
+        if r_normalized not in seen and r_normalized != query.lower().strip():
+            seen.add(r_normalized)
+            unique_related.append(r)
+
+    result = {
+        "original_query": query,
+        "language": language,
+        "related_searches": unique_related[:12],  # Top 12
+        "sources_checked": sources_checked + ["query_expansion"],
+        "usage_tip": "Use these with community_search to explore related topics",
+    }
+
+    result_json = json.dumps(result, indent=2)
+    set_cached_result(cache_key, result_json)
+    return result_json
+
+
+@mcp.tool(
+    name="export_findings",
+    annotations={
+        "title": "Export Research Findings",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def export_findings(
+    topic: str,
+    findings_json: str,
+    format: str = "markdown",
+    include_code: bool = True,
+    include_sources: bool = True,
+) -> str:
+    """
+    Export research findings to a shareable document format.
+
+    Takes the JSON output from community_search and converts it into a
+    clean, shareable document that you can send to teammates or save
+    for future reference.
+
+    **Marketing Value:** "Share research with your team in one click"
+
+    Args:
+        topic (str): The research topic (for the document title)
+        findings_json (str): JSON string from community_search (response_format="json")
+        format (str): Output format - "markdown", "html", or "text" (default: "markdown")
+        include_code (bool): Include code snippets (default: True)
+        include_sources (bool): Include source URLs (default: True)
+
+    Returns:
+        str: Formatted document ready to share
+
+    Example:
+        1. Run: community_search(language="Python", topic="FastAPI auth", response_format="json")
+        2. Pass the result to: export_findings(topic="FastAPI Auth", findings_json=<result>)
+        3. Get a clean markdown document to share
+    """
+    try:
+        data = json.loads(findings_json)
+    except json.JSONDecodeError:
+        return "Error: Invalid JSON. Please pass the JSON output from community_search."
+
+    findings = data.get("findings", [])
+    conflicts = data.get("conflicts", [])
+    recommended_path = data.get("recommended_path", [])
+    search_meta = data.get("search_meta", {})
+
+    if format == "markdown":
+        return _export_markdown(
+            topic,
+            findings,
+            conflicts,
+            recommended_path,
+            search_meta,
+            include_code,
+            include_sources,
+        )
+    elif format == "html":
+        return _export_html(
+            topic,
+            findings,
+            conflicts,
+            recommended_path,
+            search_meta,
+            include_code,
+            include_sources,
+        )
+    else:  # text
+        return _export_text(
+            topic,
+            findings,
+            conflicts,
+            recommended_path,
+            search_meta,
+            include_code,
+            include_sources,
+        )
+
+
+def _export_markdown(
+    topic: str,
+    findings: list,
+    conflicts: list,
+    recommended_path: list,
+    search_meta: dict,
+    include_code: bool,
+    include_sources: bool,
+) -> str:
+    """Export to markdown format."""
+    lines = [
+        f"# Research Report: {topic}",
+        "",
+        f"*Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}*",
+        "",
+        f"**Sources:** {search_meta.get('total_results', 0)} results from {search_meta.get('source_count', 0)} sources",
+        "",
+        "---",
+        "",
+    ]
+
+    # Executive Summary
+    if findings:
+        top_finding = findings[0]
+        lines.extend(
+            [
+                "## Executive Summary",
+                "",
+                f"> {top_finding.get('solution', 'See findings below.')[:200]}",
+                "",
+            ]
+        )
+
+    # Findings
+    lines.extend(["## Key Findings", ""])
+
+    for i, f in enumerate(findings[:10], 1):
+        score = f.get("quality_score", f.get("score", 0))
+        title = f.get("title", "Untitled")[:60]
+
+        lines.append(f"### {i}. {title}")
+        lines.append("")
+        lines.append(
+            f"**Quality Score:** {score}/100 | **Source:** {f.get('source', 'unknown')}"
+        )
+        lines.append("")
+
+        if f.get("issue"):
+            lines.append(f"**Problem:** {f.get('issue')[:150]}")
+            lines.append("")
+
+        if f.get("solution"):
+            lines.append(f"**Solution:** {f.get('solution')[:300]}")
+            lines.append("")
+
+        if include_code and f.get("code"):
+            code = f.get("code", "").replace("\\n", "\n")[:500]
+            lines.extend(
+                [
+                    "```",
+                    code,
+                    "```",
+                    "",
+                ]
+            )
+
+        if include_sources and f.get("url"):
+            lines.append(f"[View Source]({f.get('url')})")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+
+    # Warnings
+    if conflicts:
+        lines.extend(["## Warnings & Caveats", ""])
+        for c in conflicts[:5]:
+            desc = c.get("description", str(c)) if isinstance(c, dict) else str(c)
+            lines.append(f"- {desc[:100]}")
+        lines.append("")
+
+    # Next Steps
+    if recommended_path:
+        lines.extend(["## Recommended Next Steps", ""])
+        for step in recommended_path[:5]:
+            if isinstance(step, dict):
+                text = step.get("step", str(step))
+            else:
+                text = str(step)
+            lines.append(f"- [ ] {text[:80]}")
+        lines.append("")
+
+    # Footer
+    lines.extend(
+        [
+            "---",
+            "",
+            "*Report generated by Community Research MCP*",
+            "",
+            '*"Where the official documentation ends and actual solutions begin."*',
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+def _export_html(
+    topic: str,
+    findings: list,
+    conflicts: list,
+    recommended_path: list,
+    search_meta: dict,
+    include_code: bool,
+    include_sources: bool,
+) -> str:
+    """Export to HTML format."""
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Research Report: {topic}</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+        h1 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
+        .finding {{ background: #f8f9fa; border-left: 4px solid #3498db; padding: 15px; margin: 15px 0; }}
+        .score {{ background: #27ae60; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; }}
+        code {{ background: #2c3e50; color: #ecf0f1; padding: 10px; display: block; overflow-x: auto; }}
+        .warning {{ background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 10px 0; }}
+        a {{ color: #3498db; }}
+    </style>
+</head>
+<body>
+    <h1>Research Report: {topic}</h1>
+    <p><em>Generated: {datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}</em></p>
+    <p><strong>Sources:</strong> {search_meta.get("total_results", 0)} results from {search_meta.get("source_count", 0)} sources</p>
+
+    <h2>Key Findings</h2>
+"""
+
+    for i, f in enumerate(findings[:10], 1):
+        score = f.get("quality_score", f.get("score", 0))
+        html += f"""
+    <div class="finding">
+        <h3>{i}. {f.get("title", "Untitled")[:60]}</h3>
+        <span class="score">{score}/100</span> | {f.get("source", "unknown")}
+        <p><strong>Solution:</strong> {f.get("solution", "")[:300]}</p>
+"""
+        if include_code and f.get("code"):
+            html += f"        <code>{f.get('code', '')[:500]}</code>\n"
+        if include_sources and f.get("url"):
+            html += f'        <p><a href="{f.get("url")}">View Source</a></p>\n'
+        html += "    </div>\n"
+
+    if conflicts:
+        html += "    <h2>Warnings</h2>\n"
+        for c in conflicts[:5]:
+            desc = c.get("description", str(c)) if isinstance(c, dict) else str(c)
+            html += f'    <div class="warning">{desc[:100]}</div>\n'
+
+    html += """
+    <hr>
+    <p><em>Report generated by Community Research MCP</em></p>
+</body>
+</html>"""
+
+    return html
+
+
+def _export_text(
+    topic: str,
+    findings: list,
+    conflicts: list,
+    recommended_path: list,
+    search_meta: dict,
+    include_code: bool,
+    include_sources: bool,
+) -> str:
+    """Export to plain text format."""
+    lines = [
+        f"RESEARCH REPORT: {topic.upper()}",
+        "=" * 60,
+        f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
+        f"Sources: {search_meta.get('total_results', 0)} results from {search_meta.get('source_count', 0)} sources",
+        "",
+        "KEY FINDINGS",
+        "-" * 40,
+        "",
+    ]
+
+    for i, f in enumerate(findings[:10], 1):
+        score = f.get("quality_score", f.get("score", 0))
+        lines.append(f"{i}. {f.get('title', 'Untitled')[:60]}")
+        lines.append(f"   Score: {score}/100 | Source: {f.get('source', 'unknown')}")
+        lines.append(f"   Solution: {f.get('solution', '')[:200]}")
+        if include_sources and f.get("url"):
+            lines.append(f"   URL: {f.get('url')}")
+        lines.append("")
+
+    if conflicts:
+        lines.extend(["WARNINGS", "-" * 40])
+        for c in conflicts[:5]:
+            desc = c.get("description", str(c)) if isinstance(c, dict) else str(c)
+            lines.append(f"* {desc[:100]}")
+        lines.append("")
+
+    lines.extend(
+        [
+            "=" * 60,
+            "Report generated by Community Research MCP",
+        ]
+    )
+
+    return "\n".join(lines)
 
 
 @mcp.tool(
