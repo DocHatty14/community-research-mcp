@@ -1322,14 +1322,16 @@ async def aggregate_search_results(
             if ENHANCED_UTILITIES_AVAILABLE:
                 # Use circuit breaker for each source
                 circuit_breaker = get_circuit_breaker(source)
-                if source in {"hackernews", "lobsters", "discourse"}:
+                if source in {"hackernews", "lobsters"}:
+                    # These APIs only take query, no language
                     raw = await circuit_breaker.call_async(resilient_api_call, func, q)
                 else:
+                    # All other APIs take query + language (including discourse)
                     raw = await circuit_breaker.call_async(
                         resilient_api_call, func, q, lang
                     )
             else:
-                if source in {"hackernews", "lobsters", "discourse"}:
+                if source in {"hackernews", "lobsters"}:
                     raw = await func(q)
                 else:
                     raw = await func(q, lang)
