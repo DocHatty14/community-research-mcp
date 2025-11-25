@@ -1,8 +1,12 @@
+<div align="center">
+
 # Community Research MCP
 
-> **Street-smart tips, hacks, and workarounds from devs who've been there.**
+### Street-smart tips, hacks, and workarounds from devs who've been there.
 
 An MCP server that digs through Stack Overflow, GitHub Issues, Hacker News, and other developer watering holes to find battle-tested solutions, clever workarounds, and real-world patterns that actually work.
+
+<br>
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -28,23 +32,33 @@ An MCP server that digs through Stack Overflow, GitHub Issues, Hacker News, and 
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
+<br>
+
+[Quick Start](#quick-start) • [Features](#what-it-does) • [Configuration](#configuration) • [Tools](#mcp-tools) • [Troubleshooting](#troubleshooting)
+
+</div>
+
+<br>
+
+---
+
+<br>
+
 ## Quick Start
 
-### Installation
+<br>
+
+### 1. Install
 
 ```bash
-# Clone the repo
 git clone https://github.com/your-repo/community-research-mcp.git
 cd community-research-mcp
-
-# Install deps
 pip install -e .
-
-# Or with uv (faster)
-uv pip install -e .
 ```
 
-### Configure Claude Desktop
+<br>
+
+### 2. Configure Claude Desktop
 
 Drop this into your `claude_desktop_config.json`:
 
@@ -60,79 +74,109 @@ Drop this into your `claude_desktop_config.json`:
 }
 ```
 
-### Basic Usage
+<br>
+
+### 3. Use It
 
 Just ask Claude:
 
-> "Search for Python async database connection pooling patterns"
+> *"Search for Python async database connection pooling patterns"*
 
 The MCP taps into developer communities and surfaces ranked solutions with quality scores.
 
+<br>
+
 ---
+
+<br>
 
 ## What It Does
 
+<br>
+
 ### Multi-Source Search
 
-Hits 9 developer communities at once:
+Hits **9 developer communities** at once:
+
+<br>
 
 | Source | What You Get | API Key? |
-|--------|--------------|----------|
-| **Stack Overflow** | Q&A gold | Nope |
-| **GitHub Issues** | Bug reports, workarounds | Optional (higher limits) |
-| **Hacker News** | Tech war stories | Nope |
-| **Lobsters** | Deep technical dives | Nope |
-| **Discourse** | Language-specific forums | Nope |
+|:-------|:-------------|:--------:|
+| **Stack Overflow** | Q&A gold | No |
+| **GitHub Issues** | Bug reports, workarounds | Optional |
+| **Hacker News** | Tech war stories | No |
+| **Lobsters** | Deep technical dives | No |
+| **Discourse** | Language-specific forums | No |
 | **Serper** | Google Search results | Yes |
 | **Tavily** | AI-optimized search | Yes |
 | **Brave** | Privacy-focused search | Yes |
 | **Firecrawl** | Web scraping | Yes |
 
+<br>
+
 ### Quality Scoring
 
-Every result gets a street-cred score (0-100) based on:
+Every result gets a **street-cred score (0-100)** based on:
 
-- **Source Authority** — Stack Overflow accepted answers beat random blog posts
-- **Community Validation** — Upvotes, reactions, the crowd has spoken
-- **Recency** — Fresh fixes for fast-moving tech
-- **Specificity** — Actual code, not hand-wavy explanations
-- **Evidence** — Benchmarks, repro steps, real numbers
+<br>
+
+| Signal | What It Means |
+|:-------|:--------------|
+| **Source Authority** | Stack Overflow accepted answers beat random blog posts |
+| **Community Validation** | Upvotes, reactions — the crowd has spoken |
+| **Recency** | Fresh fixes for fast-moving tech |
+| **Specificity** | Actual code, not hand-wavy explanations |
+| **Evidence** | Benchmarks, repro steps, real numbers |
+
+<br>
 
 ### Built-In Reliability
 
-- **Circuit Breaker** — Stops hammering dead APIs
-- **Auto-Retry** — Exponential backoff for flaky connections
-- **Deduplication** — Kills duplicate results (~20% noise reduction)
-- **Caching** — 1-hour TTL so you don't burn through rate limits
+<br>
+
+| Feature | Why It Matters |
+|:--------|:---------------|
+| **Circuit Breaker** | Stops hammering dead APIs |
+| **Auto-Retry** | Exponential backoff for flaky connections |
+| **Deduplication** | Kills duplicate results (~20% noise reduction) |
+| **Caching** | 1-hour TTL so you don't burn through rate limits |
+
+<br>
 
 ---
 
+<br>
+
 ## Configuration
+
+<br>
 
 ### Environment Variables
 
 Create a `.env` file:
 
 ```bash
-# Optional: Web Search APIs (unlock more sources)
+# Web Search APIs (unlock more sources)
 SERPER_API_KEY=your_key        # https://serper.dev
 TAVILY_API_KEY=your_key        # https://tavily.com
 BRAVE_SEARCH_API_KEY=your_key  # https://brave.com/search/api
 FIRECRAWL_API_KEY=your_key     # https://firecrawl.dev
 
-# Optional: Higher rate limits
+# Higher rate limits
 GITHUB_TOKEN=your_token        # https://github.com/settings/tokens
 STACKEXCHANGE_API_KEY=your_key # https://stackapps.com
 
-# Optional: Reddit (requires app registration)
+# Reddit (requires app registration)
 REDDIT_CLIENT_ID=your_id
 REDDIT_CLIENT_SECRET=your_secret
 REDDIT_REFRESH_TOKEN=your_token
 ```
 
+<br>
+
 ### Source Weights
 
-Tweak source priorities in `config.json`:
+Tweak priorities in `config.json`:
 
 ```json
 {
@@ -145,11 +189,75 @@ Tweak source priorities in `config.json`:
 }
 ```
 
-Higher weight = more trusted for street-smart solutions.
+> Higher weight = more trusted for street-smart solutions.
+
+<br>
 
 ---
 
+<br>
+
+## MCP Tools
+
+<br>
+
+### `community_search`
+
+The main workhorse. Searches all enabled sources and returns ranked results.
+
+```
+language: "Python"
+topic: "async SQLAlchemy connection pooling with FastAPI"
+goal: "Handle 1000 concurrent database connections"
+current_setup: "FastAPI + PostgreSQL + SQLAlchemy 2.0"
+```
+
+<br>
+
+### `get_source_status`
+
+Check what's up with all sources — enabled, has API keys, circuit breaker tripped, etc.
+
+<br>
+
+### `get_rate_limit_status`
+
+See how much quota you've burned through across all APIs.
+
+<br>
+
+### `clear_cache`
+
+Nuke the search cache when you need fresh results.
+
+<br>
+
+---
+
+<br>
+
+## Rate Limits
+
+<br>
+
+| Source | Free Tier | With API Key |
+|:-------|:---------:|:------------:|
+| Stack Exchange | 300/day | 10,000/day |
+| GitHub | 10/min | 30/min |
+| Hacker News | 1000/hour | — |
+| Serper | — | 2,500/month |
+| Tavily | — | 1,000/month |
+| Brave | — | 2,000/month |
+
+<br>
+
+---
+
+<br>
+
 ## Project Structure
+
+<br>
 
 ```
 community-research-mcp/
@@ -174,49 +282,15 @@ community-research-mcp/
 └── tests/                      # Test cases
 ```
 
----
-
-## MCP Tools
-
-### `community_search`
-
-The main workhorse. Searches all enabled sources and returns ranked results.
-
-```
-language: "Python"
-topic: "async SQLAlchemy connection pooling with FastAPI"
-goal: "Handle 1000 concurrent database connections"
-current_setup: "FastAPI + PostgreSQL + SQLAlchemy 2.0"
-```
-
-### `get_source_status`
-
-Check what's up with all sources — enabled, has API keys, circuit breaker tripped, etc.
-
-### `get_rate_limit_status`
-
-See how much quota you've burned through across all APIs.
-
-### `clear_cache`
-
-Nuke the search cache when you need fresh results.
+<br>
 
 ---
 
-## Rate Limits
-
-| Source | Free Tier | With API Key |
-|--------|-----------|--------------|
-| Stack Exchange | 300/day | 10,000/day |
-| GitHub | 10/min | 30/min |
-| Hacker News | 1000/hour | — |
-| Serper | — | 2,500/month |
-| Tavily | — | 1,000/month |
-| Brave | — | 2,000/month |
-
----
+<br>
 
 ## Development
+
+<br>
 
 ### Running Tests
 
@@ -224,17 +298,16 @@ Nuke the search cache when you need fresh results.
 pytest tests/
 ```
 
+<br>
+
 ### Code Style
 
 ```bash
-# Format
-black .
-isort .
-
-# Lint
-flake8
-mypy .
+black . && isort .   # Format
+flake8 && mypy .     # Lint
 ```
+
+<br>
 
 ### Adding a New Source
 
@@ -243,35 +316,58 @@ mypy .
 3. Add to source config in `community_research_mcp.py`
 4. Add rate limit info
 
+<br>
+
 ---
+
+<br>
 
 ## Troubleshooting
 
-### "No results found"
+<br>
+
+<details>
+<summary><strong>"No results found"</strong></summary>
+
+<br>
 
 - Make your query more specific (not just "performance" or "settings")
 - Check that API keys are set for web search sources
 - Run `get_source_status` to see if circuit breakers tripped
 
-### "Rate limit exceeded"
+</details>
+
+<br>
+
+<details>
+<summary><strong>"Rate limit exceeded"</strong></summary>
+
+<br>
 
 - Chill and wait for the window to reset
 - Add API keys for higher limits
 - Rely on caching to avoid repeat searches
 
-### "Source is failing"
+</details>
+
+<br>
+
+<details>
+<summary><strong>"Source is failing"</strong></summary>
+
+<br>
 
 - Check `get_source_status` for circuit breaker state
 - Breaker trips after 5 failures, resets after 5 minutes
 - Sometimes sources just go down — it happens
 
----
+</details>
 
-## License
-
-MIT License — see [LICENSE](LICENSE) for details.
+<br>
 
 ---
+
+<br>
 
 ## Contributing
 
@@ -281,8 +377,18 @@ MIT License — see [LICENSE](LICENSE) for details.
 4. Run tests and linting
 5. Submit a PR
 
+<br>
+
 ---
 
-<p align="center">
-  <i>Built for devs who want real solutions, not documentation fluff.</i>
-</p>
+<br>
+
+<div align="center">
+
+**MIT License** — see [LICENSE](LICENSE) for details.
+
+<br>
+
+*Built for devs who want real solutions, not documentation fluff.*
+
+</div>
