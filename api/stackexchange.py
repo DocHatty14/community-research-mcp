@@ -277,6 +277,139 @@ async def search_multi(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Answer Fetching
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+async def fetch_accepted_answer(
+    question_id: int,
+    site: str = "stackoverflow",
+) -> Optional[dict[str, Any]]:
+    """
+    Fetch the accepted answer for a Stack Overflow question.
+
+    Args:
+        question_id: The question ID from the URL
+        site: Stack Exchange site (default: stackoverflow)
+
+    Returns:
+        Answer dict with body, score, is_accepted, or None if no accepted answer
+    """
+    params: dict[str, Any] = {
+        "order": "desc",
+        "sort": "votes",
+        "site": site,
+        "filter": "withbody",  # Include answer body
+    }
+    if API_KEY:
+        params["key"] = API_KEY
+
+    try:
+        async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
+            response = await client.get(
+                f"{API_BASE}/questions/{question_id}/answers",
+                params=params,
+            )
+
+            if response.status_code == 429:
+                logger.warning("Rate limited fetching answers")
+                return None
+
+            response.raise_for_status()
+            data = response.json()
+
+            answers = data.get("items", [])
+            if not answers:
+                return None
+
+            # Prioritize accepted answer, then highest voted
+            accepted = next((a for a in answers if a.get("is_accepted")), None)
+            best = accepted or answers[0]
+
+            return {
+                "body": best.get("body", ""),
+                "score": best.get("score", 0),
+                "is_accepted": best.get("is_accepted", False),
+                "answer_id": best.get("answer_id"),
+            }
+
+    except Exception as e:
+        logger.debug(f"Failed to fetch answer for question {question_id}: {e}")
+        return None
+
+
+async def enrich_with_answers(
+    results: list[dict[str, Any]],
+    site: str = "stackoverflow",
+    max_to_enrich: int = 5,
+) -> list[dict[str, Any]]:
+    """
+    Enrich top Stack Overflow results with their accepted/best answer content.
+
+    Only enriches results that have accepted answers to avoid wasted API calls.
+
+    Args:
+        results: List of search results
+        site: Stack Exchange site
+        max_to_enrich: Maximum number of results to enrich (to save API quota)
+
+    Returns:
+        Enriched results with answer_body field added
+    """
+    import re
+
+    # Only enrich results that are answered
+    to_enrich = [
+        r
+        for r in results[:max_to_enrich]
+        if r.get("is_answered") or r.get("answer_count", 0) > 0
+    ]
+
+    async def enrich_one(result: dict[str, Any]) -> dict[str, Any]:
+        url = result.get("url", "")
+        # Extract question ID from URL like https://stackoverflow.com/questions/12345/title
+        match = re.search(r"/questions/(\d+)", url)
+        if not match:
+            return result
+
+        question_id = int(match.group(1))
+        answer = await fetch_accepted_answer(question_id, site)
+
+        if answer and answer.get("body"):
+            # Clean HTML from answer body
+            body = answer["body"]
+            # Remove HTML tags but keep code blocks
+            clean_body = re.sub(r"<code>", "```", body)
+            clean_body = re.sub(r"</code>", "```", clean_body)
+            clean_body = re.sub(r"<pre>", "\n", clean_body)
+            clean_body = re.sub(r"</pre>", "\n", clean_body)
+            clean_body = re.sub(r"<[^>]+>", " ", clean_body)
+            clean_body = re.sub(r"&lt;", "<", clean_body)
+            clean_body = re.sub(r"&gt;", ">", clean_body)
+            clean_body = re.sub(r"&amp;", "&", clean_body)
+            clean_body = re.sub(r"&quot;", '"', clean_body)
+            clean_body = re.sub(r"&#39;", "'", clean_body)
+            clean_body = re.sub(r"\s+", " ", clean_body).strip()
+
+            result["answer_body"] = clean_body[:2000]  # Limit size
+            result["answer_score"] = answer.get("score", 0)
+            result["has_accepted_answer"] = answer.get("is_accepted", False)
+
+            # Use answer as snippet if it's better
+            if len(clean_body) > len(result.get("snippet", "")):
+                result["snippet"] = clean_body[:1000]
+
+        return result
+
+    # Fetch answers concurrently
+    enriched = await asyncio.gather(*[enrich_one(r) for r in to_enrich])
+
+    # Merge enriched results back
+    enriched_map = {r.get("url"): r for r in enriched}
+    return [enriched_map.get(r.get("url"), r) for r in results]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Backward Compatibility
 # ══════════════════════════════════════════════════════════════════════════════
 

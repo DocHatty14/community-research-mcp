@@ -30,6 +30,7 @@ class ResponseFormat(str, Enum):
 
     MARKDOWN = "markdown"
     JSON = "json"
+    RAW = "raw"  # Full unprocessed results for LLM synthesis
 
 
 class ThinkingMode(str, Enum):
@@ -84,8 +85,8 @@ class SearchInput(BaseModel):
     )
 
     response_format: ResponseFormat = Field(
-        default=ResponseFormat.MARKDOWN,
-        description="Output format: 'markdown' or 'json'",
+        default=ResponseFormat.RAW,
+        description="Output format: 'raw' (default - full data for LLM synthesis), 'markdown', or 'json'",
     )
 
     thinking_mode: ThinkingMode = Field(

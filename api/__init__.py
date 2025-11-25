@@ -50,67 +50,101 @@ except ImportError:
 # Community Sources (Free)
 # ══════════════════════════════════════════════════════════════════════════════
 
-from api.stackexchange import (
-    search as search_stackexchange,
-    search_multi as search_stackexchange_multi,
-    search_stackoverflow,
-    SITES as STACKEXCHANGE_SITES,
+from api.brave import (
+    search as search_brave_web,
 )
-
-from api.github import (
-    search as search_github_issues,
-    search_github,
+from api.brave import (
+    search_brave,
 )
-
-from api.hackernews import (
-    search as search_hackernews_posts,
-    search_hackernews,
+from api.brave import (
+    search_news as search_brave_news,
 )
-
-from api.lobsters import (
-    search as search_lobsters_posts,
-    search_lobsters,
+from api.discourse import (
+    FORUMS as DISCOURSE_FORUMS,
 )
-
 from api.discourse import (
     search as search_discourse_forums,
+)
+from api.discourse import (
     search_discourse,
-    FORUMS as DISCOURSE_FORUMS,
+)
+from api.firecrawl import (
+    map_firecrawl,
+    scrape_firecrawl,
+    search_firecrawl,
+)
+from api.firecrawl import (
+    map_site as map_firecrawl_site,
+)
+from api.firecrawl import (
+    scrape as scrape_firecrawl_page,
+)
+from api.firecrawl import (
+    search as search_firecrawl_web,
+)
+from api.github import (
+    search as search_github_issues,
+)
+from api.github import (
+    search_github,
+)
+from api.hackernews import (
+    search as search_hackernews_posts,
+)
+from api.hackernews import (
+    search_hackernews,
+)
+from api.lobsters import (
+    search as search_lobsters_posts,
+)
+from api.lobsters import (
+    search_lobsters,
+)
+from api.serper import (
+    get_related as get_serper_related,
+)
+from api.serper import (
+    get_serper_related_searches,
+    search_serper,
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Web Search APIs (Require Keys)
 # ══════════════════════════════════════════════════════════════════════════════
-
 from api.serper import (
     search as search_serper_web,
-    search_news as search_serper_news,
-    get_related as get_serper_related,
-    search_serper,
-    get_serper_related_searches,
 )
-
+from api.serper import (
+    search_news as search_serper_news,
+)
+from api.stackexchange import (
+    SITES as STACKEXCHANGE_SITES,
+)
+from api.stackexchange import (
+    enrich_with_answers as enrich_stackexchange_answers,
+)
+from api.stackexchange import (
+    fetch_accepted_answer,
+    search_stackoverflow,
+)
+from api.stackexchange import (
+    search as search_stackexchange,
+)
+from api.stackexchange import (
+    search_multi as search_stackexchange_multi,
+)
+from api.tavily import (
+    extract as extract_tavily_content,
+)
+from api.tavily import (
+    extract_tavily,
+    search_tavily,
+)
 from api.tavily import (
     search as search_tavily_web,
+)
+from api.tavily import (
     search_news as search_tavily_news,
-    extract as extract_tavily_content,
-    search_tavily,
-    extract_tavily,
-)
-
-from api.brave import (
-    search as search_brave_web,
-    search_news as search_brave_news,
-    search_brave,
-)
-
-from api.firecrawl import (
-    search as search_firecrawl_web,
-    scrape as scrape_firecrawl_page,
-    map_site as map_firecrawl_site,
-    search_firecrawl,
-    scrape_firecrawl,
-    map_firecrawl,
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -121,14 +155,6 @@ __all__ = [
     # Stack Exchange
     "search_stackexchange",
     "search_stackexchange_multi",
-    "search_stackoverflow",
-    "STACKEXCHANGE_SITES",
-    # GitHub
-    "search_github_issues",
-    "search_github",
-    # Hacker News
-    "search_hackernews_posts",
-    "search_hackernews",
     # Lobsters
     "search_lobsters_posts",
     "search_lobsters",
@@ -150,6 +176,8 @@ __all__ = [
     "extract_tavily",
     # Brave
     "search_brave_web",
+    "search_brave_news",
+    "search_brave",
     "search_brave_news",
     "search_brave",
     "search_hackernews",

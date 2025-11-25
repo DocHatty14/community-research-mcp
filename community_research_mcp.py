@@ -96,6 +96,7 @@ _quality_scorer = QualityScorer(_quality_preset)
 
 # Import API integrations
 from api import (
+    enrich_stackexchange_answers,
     search_brave,
     search_discourse,
     search_firecrawl,
@@ -1307,18 +1308,38 @@ def build_audit_entry(
 async def search_reddit(query: str, language: str) -> List[Dict[str, Any]]:
     """Search Reddit programming subreddits."""
     try:
-        # Map languages to TECHNICAL subreddits only (no "learn" subreddits!)
+        # Map languages to TECHNICAL subreddits - prioritize help/troubleshooting focused ones
         subreddit_map = {
-            "python": "python+pythontips",
-            "javascript": "javascript+node+electronjs",  # Added electronjs, removed learn subreddits
-            "java": "java",
-            "rust": "rust",
+            "python": "python+pythonhelp+django+flask",
+            "javascript": "javascript+node+reactjs+webdev",
+            "nodejs": "node+javascript+webdev",  # Node.js specific
+            "node": "node+javascript+webdev",
+            "typescript": "typescript+javascript+node+webdev",
+            "java": "java+javahelp+springboot",
+            "rust": "rust+learnrust",
             "go": "golang",
-            "cpp": "cpp",
-            "csharp": "csharp",
+            "golang": "golang",
+            "cpp": "cpp+cplusplus",
+            "c++": "cpp+cplusplus",
+            "csharp": "csharp+dotnet",
+            "c#": "csharp+dotnet",
+            "ruby": "ruby+rails",
+            "php": "php+laravel",
+            "swift": "swift+iosprogramming",
+            "kotlin": "kotlin+androiddev",
+            "react": "reactjs+javascript+webdev",
+            "vue": "vuejs+javascript+webdev",
+            "angular": "angular+javascript+webdev",
+            "docker": "docker+devops",
+            "kubernetes": "kubernetes+devops",
+            "aws": "aws+devops",
+            "linux": "linux+linuxquestions+sysadmin",
+            "sql": "sql+database",
+            "mongodb": "mongodb+database",
+            "redis": "redis+database",
         }
 
-        subreddit = subreddit_map.get(language.lower(), "programming")
+        subreddit = subreddit_map.get(language.lower(), "programming+webdev+devops")
 
         # Try authenticated API first if available
         if reddit_authenticated and reddit_client:
@@ -1391,13 +1412,35 @@ async def search_reddit(query: str, language: str) -> List[Dict[str, Any]]:
             results = []
             for item in data.get("data", {}).get("children", []):
                 post = item.get("data", {})
+                # selftext contains the post body for text posts
+                # For link posts, selftext is empty but we still want the title
+                selftext = post.get("selftext", "") or ""
+                # Also grab the link flair and subreddit for context
+                flair = post.get("link_flair_text", "") or ""
+                subreddit_name = post.get("subreddit", "") or ""
+
+                # Build content: use selftext if available, otherwise note it's a link post
+                if selftext.strip():
+                    content = selftext[:2000]
+                else:
+                    # For link posts, include what info we have
+                    linked_url = post.get("url", "")
+                    content = (
+                        f"[Link post to: {linked_url}]"
+                        if linked_url
+                        else "[No content - check URL]"
+                    )
+
                 results.append(
                     {
                         "title": post.get("title", ""),
                         "url": f"https://www.reddit.com{post.get('permalink', '')}",
                         "score": post.get("score", 0),
                         "comments": post.get("num_comments", 0),
-                        "snippet": post.get("selftext", "")[:1000],
+                        "snippet": content,
+                        "selftext": selftext[:2000],  # Keep raw selftext too
+                        "subreddit": subreddit_name,
+                        "flair": flair,
                         "authenticated": False,
                     }
                 )
@@ -1863,6 +1906,20 @@ async def aggregate_search_results(
         raw_results[source] = results
         audit_log.append(audit_entry)
 
+    # Enrich Stack Overflow results with accepted answer content
+    if "stackoverflow" in raw_results and raw_results["stackoverflow"]:
+        try:
+            raw_results["stackoverflow"] = await enrich_stackexchange_answers(
+                raw_results["stackoverflow"],
+                site="stackoverflow",
+                max_to_enrich=5,  # Limit to save API quota
+            )
+            logger.info(
+                f"Enriched {len(raw_results['stackoverflow'])} SO results with answer content"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to enrich SO answers: {e}")
+
     # Apply deduplication if available
     deduped_results = (
         deduplicate_results(raw_results)
@@ -2272,105 +2329,596 @@ def _is_preferred_domain(domain: str) -> bool:
 
 def _extract_issue_from_content(title: str, snippet: str, query: str) -> str:
     """
-    Extract a meaningful issue description from content.
+    Extract a meaningful issue/question description from content.
 
-    Instead of just "Not specified" or copying the title, try to identify
-    the actual problem being discussed.
+    Prioritizes actual problem statements over generic title repetition.
     """
-    content = f"{title} {snippet}".lower()
+    # Clean HTML from snippet first
+    clean_snippet = re.sub(r"<[^>]+>", " ", snippet)
+    clean_snippet = re.sub(r"&\w+;", " ", clean_snippet)  # HTML entities
+    clean_snippet = re.sub(r"\s+", " ", clean_snippet).strip()
 
-    # Problem indicator patterns - expanded for better extraction
+    content = f"{title} {clean_snippet}".lower()
+
+    # HIGH PRIORITY: Direct question patterns (what the user is actually asking)
+    question_patterns = [
+        r"(?:how (?:do|can|to|would) (?:i|you|we))\s+([^.!?\n]{15,120})",
+        r"(?:what(?:'s| is) the (?:best|proper|correct|right) (?:way|method|approach) to)\s+([^.!?\n]{15,100})",
+        r"(?:is there (?:a|any) (?:way|method|library|tool) to)\s+([^.!?\n]{15,100})",
+        r"(?:why (?:is|does|doesn't|won't|can't))\s+([^.!?\n]{15,100})",
+        r"(?:what (?:is|are|causes?))\s+([^.!?\n]{15,100})",
+    ]
+
+    for pattern in question_patterns:
+        match = re.search(pattern, content, re.IGNORECASE)
+        if match:
+            issue = match.group(0).strip()  # Include the question word
+            return _clean_extracted_text(issue, 150)
+
+    # MEDIUM PRIORITY: Problem/error patterns
     problem_patterns = [
-        r"(?:error|issue|problem|bug|fail(?:s|ed|ing)?)[:\s]+([^.!?\n]{20,100})",
-        r"(?:can'?t|cannot|unable to|doesn'?t work)[:\s]*([^.!?\n]{15,100})",
-        r"(?:how (?:to|do|can) (?:i|we|you))[:\s]*([^.!?\n]{15,100})",
-        r"(?:why (?:is|does|do|are))[:\s]*([^.!?\n]{15,100})",
-        r"(?:need(?:s|ed)?|want(?:s|ed)?|looking for)[:\s]+([^.!?\n]{15,100})",
-        r"(?:struggling with|having trouble)[:\s]*([^.!?\n]{15,100})",
+        r"(?:getting|receiving|seeing|encountering)\s+(?:an?\s+)?(?:error|exception|warning)[:\s]+([^.!?\n]{15,100})",
+        r"(?:error|exception|traceback)[:\s]+([^.!?\n]{20,100})",
+        r"(?:can'?t|cannot|unable to|doesn'?t work|won'?t|failing to)\s+([^.!?\n]{15,100})",
+        r"(?:problem|issue|trouble|difficulty)\s+(?:with|when|while)\s+([^.!?\n]{15,100})",
+        r"(?:not working|broken|fails?|crashing)\s+(?:when|while|on|for)?\s*([^.!?\n]{10,100})",
     ]
 
     for pattern in problem_patterns:
         match = re.search(pattern, content, re.IGNORECASE)
         if match:
             issue = match.group(1).strip()
-            if len(issue) > 20:
-                return issue[:150].capitalize()
+            if len(issue) > 15:
+                return _clean_extracted_text(issue, 150)
 
-    # Fall back to extracting from title if it looks like a question/issue
-    title_lower = title.lower()
-    if any(
-        w in title_lower
-        for w in ["error", "issue", "problem", "fail", "not working", "how to", "why"]
+    # LOW PRIORITY: Title is a question - use it but clean it up
+    title_lower = title.lower().strip()
+    if title_lower.startswith(
+        ("how ", "what ", "why ", "when ", "where ", "is ", "can ", "does ")
     ):
-        # Clean up the title - remove source suffixes
         clean_title = re.sub(
-            r"\s*[-|·]\s*(Stack Overflow|GitHub|Reddit|Medium|DEV Community|Brave).*$",
+            r"\s*[-|·:]\s*(Stack Overflow|GitHub|Reddit|Medium|DEV|Brave|r/).*$",
             "",
             title,
             flags=re.IGNORECASE,
         )
-        # Ensure clean word boundaries (don't cut mid-word)
-        if len(clean_title) > 100:
-            clean_title = clean_title[:100].rsplit(" ", 1)[0]
-        return clean_title.strip()
+        return _clean_extracted_text(clean_title, 120)
 
-    # Extract first meaningful sentence from snippet as fallback
-    sentences = re.split(r"[.!?]\s+", snippet)
-    for sentence in sentences[:3]:  # Check first 3 sentences
+    # FALLBACK: First meaningful sentence that isn't just metadata
+    sentences = re.split(r"[.!?]\s+", clean_snippet)
+    for sentence in sentences[:3]:
         sentence = sentence.strip()
-        if len(sentence) > 25 and len(sentence) < 200:
-            # Clean HTML tags
-            sentence = re.sub(r"<[^>]+>", "", sentence)
-            return sentence[:150]
+        # Skip sentences that are just lists, code output, or too short
+        if (
+            len(sentence) > 30
+            and len(sentence) < 200
+            and not sentence.startswith(("```", "|", "-", "*", "#"))
+            and not re.match(r"^\d+[\s\-:]", sentence)
+        ):
+            return _clean_extracted_text(sentence, 150)
 
-    # Last resort: clean title without "Related to:" prefix
+    # Last resort: cleaned title
     clean_title = re.sub(
-        r"\s*[-|·]\s*(Stack Overflow|GitHub|Reddit|Medium|DEV Community).*$",
+        r"\s*[-|·:]\s*(Stack Overflow|GitHub|Reddit|Medium|DEV|Brave).*$",
         "",
         title,
         flags=re.IGNORECASE,
     )
-    # Ensure clean word boundaries
-    if len(clean_title) > 80:
-        clean_title = clean_title[:80].rsplit(" ", 1)[0]
-    return clean_title.strip() if clean_title.strip() else title[:80]
+    return _clean_extracted_text(clean_title, 100) if clean_title.strip() else ""
 
 
-def _extract_solution_from_content(snippet: str, title: str) -> str:
+def _extract_solution_from_content(snippet: str, title: str, source: str = "") -> str:
     """
-    IMPROVEMENT 2: Extract a meaningful solution from content.
+    Extract a meaningful solution from content.
 
-    Look for solution indicators and actual fix descriptions rather than
-    just copying the entire snippet.
+    Prioritizes actual solution descriptions, recommendations, and working code
+    over raw output or generic text.
     """
-    # Solution indicator patterns
+    # Clean HTML
+    clean_snippet = re.sub(r"<[^>]+>", " ", snippet)
+    clean_snippet = re.sub(r"&\w+;", " ", clean_snippet)
+    clean_snippet = re.sub(r"\s+", " ", clean_snippet).strip()
+
+    # HIGH PRIORITY: Explicit solution statements
     solution_patterns = [
-        r"(?:solution|fix|answer|resolved|solved)[:\s]+([^.!?\n]{20,200})",
-        r"(?:you (?:can|should|need to)|try|use)[:\s]+([^.!?\n]{20,150})",
-        r"(?:the (?:fix|solution|answer|trick) (?:is|was))[:\s]+([^.!?\n]{20,150})",
-        r"(?:this worked|finally got it|figured out)[:\s]*([^.!?\n]{20,150})",
+        r"(?:the )?(?:solution|fix|answer|trick|key)\s+(?:is|was|would be)[:\s]+([^.!?\n]{25,250})",
+        r"(?:solved|fixed|resolved)\s+(?:it\s+)?(?:by|with|using)[:\s]+([^.!?\n]{20,200})",
+        r"(?:you (?:can|should|need to|could)|try|just)\s+(?:use|add|set|change|replace|install|run|call)[:\s]+([^.!?\n]{15,200})",
+        r"(?:this worked|finally got it|figured it out)[:\s]*([^.!?\n]{20,200})",
+        r"(?:the (?:best|recommended|proper|correct) (?:way|approach|method|solution))\s+(?:is|would be)[:\s]+([^.!?\n]{20,200})",
+        r"(?:i (?:recommend|suggest|prefer)|we use|use)\s+([^.!?\n]{15,150})",
     ]
 
     for pattern in solution_patterns:
-        match = re.search(pattern, snippet, re.IGNORECASE)
+        match = re.search(pattern, clean_snippet, re.IGNORECASE)
         if match:
             solution = match.group(1).strip()
-            if len(solution) > 25:
-                return solution[:300]
+            if len(solution) > 20:
+                return _clean_extracted_text(solution, 300)
 
-    # If snippet has code blocks, that's likely the solution
-    if "```" in snippet or "`" in snippet:
-        # Return snippet with code as solution
-        return snippet[:400]
+    # MEDIUM PRIORITY: Code blocks with context (actual working code)
+    # Extract code and surrounding context
+    code_match = re.search(r"```[\w]*\n?(.*?)```", snippet, re.DOTALL)
+    if code_match:
+        code = code_match.group(1).strip()
+        # Get text before code as context
+        before_code = snippet[: code_match.start()].strip()
+        context_match = re.search(r"([^.!?\n]{20,100})[.!?\s]*$", before_code)
+        if context_match:
+            return f"{context_match.group(1).strip()}: {code[:200]}"
+        elif len(code) > 20:
+            return f"Code solution: {code[:250]}"
 
-    # Fall back to first meaningful sentence
-    sentences = re.split(r"[.!?]\s+", snippet)
+    # Check for inline code suggestions
+    inline_code_match = re.search(
+        r"(?:use|try|run|install|add)\s+`([^`]{5,100})`", clean_snippet, re.IGNORECASE
+    )
+    if inline_code_match:
+        return f"Use: {inline_code_match.group(1)}"
+
+    # MEDIUM PRIORITY: Library/tool recommendations
+    rec_patterns = [
+        r"(?:check out|look at|try|use|consider)\s+([A-Z][a-zA-Z0-9_-]+(?:\s+[a-zA-Z0-9_-]+)?)\s*[-–—:,]?\s*([^.!?\n]{10,100})?",
+        r"([A-Z][a-zA-Z0-9_-]+)\s+(?:is|was|works?|does)\s+([^.!?\n]{15,150})",
+    ]
+
+    for pattern in rec_patterns:
+        match = re.search(pattern, clean_snippet)
+        if match:
+            tool = match.group(1)
+            desc = match.group(2) if match.lastindex >= 2 and match.group(2) else ""
+            # Avoid matching generic words
+            if tool.lower() not in (
+                "the",
+                "this",
+                "that",
+                "it",
+                "i",
+                "we",
+                "you",
+                "my",
+                "a",
+                "an",
+            ):
+                result = f"{tool}: {desc}" if desc else tool
+                if len(result) > 15:
+                    return _clean_extracted_text(result, 200)
+
+    # LOW PRIORITY: First substantive sentence that sounds like advice/info
+    sentences = re.split(r"[.!?]\s+", clean_snippet)
     for sentence in sentences:
-        if len(sentence) > 30 and not sentence.lower().startswith(("i ", "we ", "my ")):
-            return sentence[:300]
+        sentence = sentence.strip()
+        # Skip short, code-like, or self-referential sentences
+        if (
+            len(sentence) > 40
+            and len(sentence) < 300
+            and not sentence.startswith(("I ", "We ", "My ", "```", "|", "-"))
+            and not re.match(r"^[\d\s\-\|]+$", sentence)
+        ):  # Skip tables/output
+            return _clean_extracted_text(sentence, 300)
 
-    # Last resort: truncated snippet
-    return snippet[:300] if snippet else "See linked source for details."
+    # Last resort
+    if len(clean_snippet) > 50:
+        return _clean_extracted_text(clean_snippet, 250)
+    return ""
+
+
+def _clean_extracted_text(text: str, max_length: int) -> str:
+    """Clean and truncate extracted text to max_length at word boundary."""
+    if not text:
+        return ""
+    # Remove leading/trailing punctuation and whitespace
+    text = text.strip(" \t\n-:;,")
+    # Remove common prefixes
+    text = re.sub(
+        r"^(?:basically|essentially|simply|just|so|well|actually)[,\s]+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # Ensure we don't cut mid-word
+    if len(text) > max_length:
+        text = text[:max_length].rsplit(" ", 1)[0]
+        if not text.endswith((".", "!", "?")):
+            text = text.rstrip(" ,;:-") + "..."
+    return text.strip()
+
+
+def _extract_code_block(snippet: str, answer_body: str = "") -> str:
+    """
+    Extract meaningful code blocks from content.
+
+    Only returns actual code (multi-line blocks, imports, function defs),
+    NOT simple inline code references like `functionName`.
+    """
+    content = f"{snippet}\n{answer_body}"
+
+    # Priority 1: Fenced code blocks (```...```)
+    fenced_blocks = re.findall(r"```[\w]*\n?(.*?)```", content, re.DOTALL)
+    for block in fenced_blocks:
+        block = block.strip()
+        # Must be multi-line or look like actual code
+        if len(block) > 30 and ("\n" in block or _looks_like_code(block)):
+            return block[:500]
+
+    # Priority 2: <pre><code> blocks (from SO answers)
+    pre_blocks = re.findall(
+        r"<pre><code>(.*?)</code></pre>", content, re.DOTALL | re.IGNORECASE
+    )
+    for block in pre_blocks:
+        block = re.sub(r"<[^>]+>", "", block).strip()
+        if len(block) > 30 and _looks_like_code(block):
+            return block[:500]
+
+    # Priority 3: Standalone <code> blocks that are multi-line
+    code_blocks = re.findall(r"<code>(.*?)</code>", content, re.DOTALL | re.IGNORECASE)
+    for block in code_blocks:
+        block = re.sub(r"<[^>]+>", "", block).strip()
+        if len(block) > 50 and "\n" in block and _looks_like_code(block):
+            return block[:500]
+
+    # Priority 4: Inline code that looks like a command or import
+    inline_matches = re.findall(r"`([^`]{10,150})`", content)
+    for match in inline_matches:
+        match = match.strip()
+        # Only accept if it looks like an actual command/import
+        if _looks_like_code(match) and len(match) > 15:
+            return match
+
+    return ""
+
+
+def _looks_like_code(text: str) -> bool:
+    """Check if text looks like actual code vs just a word or phrase."""
+    # Must have code-like patterns
+    code_indicators = [
+        r"^import\s+",  # import statement
+        r"^from\s+\w+\s+import",  # from X import
+        r"^def\s+\w+\s*\(",  # function def
+        r"^class\s+\w+",  # class def
+        r"^\w+\s*=\s*",  # assignment
+        r"\w+\.\w+\(",  # method call
+        r"\w+\([^)]*\)",  # function call
+        r"^pip\s+install",  # pip command
+        r"^npm\s+",  # npm command
+        r"^yarn\s+",  # yarn command
+        r"^git\s+",  # git command
+        r"^docker\s+",  # docker command
+        r"^\$\s+",  # shell prompt
+        r"^>\s+",  # REPL prompt
+        r"=>|->|::",  # arrow operators
+        r"\{[^}]+\}",  # braces (dict/object)
+        r"\[[^\]]+\]",  # brackets (array)
+        r";\s*$",  # ends with semicolon
+        r"^\s*//|^\s*#",  # comments
+    ]
+
+    for pattern in code_indicators:
+        if re.search(pattern, text, re.MULTILINE):
+            return True
+
+    # Multi-line with indentation is likely code
+    if "\n" in text:
+        lines = text.split("\n")
+        indented_lines = sum(1 for l in lines if l.startswith(("  ", "\t")))
+        if indented_lines >= 2:
+            return True
+
+    return False
+
+
+def _synthesize_quick_answer(
+    findings: List[Dict[str, Any]], topic: str, goal: Optional[str] = None
+) -> Optional[str]:
+    """
+    Synthesize a quick answer from top findings.
+
+    Instead of just showing the first snippet, this analyzes top findings
+    to produce a meaningful summary that actually answers the query.
+    """
+    if not findings:
+        return None
+
+    # Common words to ignore when looking for library/tool names
+    IGNORE_WORDS = {
+        # Articles and conjunctions
+        "the",
+        "this",
+        "that",
+        "these",
+        "those",
+        "and",
+        "but",
+        "for",
+        "with",
+        "from",
+        # Verbs
+        "use",
+        "try",
+        "have",
+        "has",
+        "was",
+        "were",
+        "been",
+        "being",
+        "are",
+        "is",
+        "can",
+        "will",
+        "would",
+        "should",
+        "could",
+        "may",
+        "might",
+        "must",
+        "make",
+        "made",
+        "find",
+        "found",
+        "work",
+        "works",
+        "working",
+        "using",
+        "used",
+        "get",
+        "got",
+        "see",
+        "look",
+        "looking",
+        "run",
+        "running",
+        "call",
+        "calling",
+        "await",
+        "async",
+        "import",
+        "return",
+        "print",
+        "read",
+        "write",
+        "send",
+        "receive",
+        # Pronouns
+        "you",
+        "your",
+        "they",
+        "them",
+        "its",
+        "our",
+        "his",
+        "her",
+        # Common programming terms (not library names)
+        "loop",
+        "code",
+        "file",
+        "data",
+        "test",
+        "debug",
+        "debugging",
+        "python",
+        "javascript",
+        "java",
+        "ruby",
+        "rust",
+        "golang",
+        "library",
+        "libraries",
+        "module",
+        "modules",
+        "package",
+        "packages",
+        "function",
+        "functions",
+        "method",
+        "methods",
+        "class",
+        "classes",
+        "string",
+        "strings",
+        "list",
+        "lists",
+        "dict",
+        "tuple",
+        "set",
+        "array",
+        "error",
+        "errors",
+        "issue",
+        "issues",
+        "problem",
+        "problems",
+        "bug",
+        "bugs",
+        "question",
+        "answer",
+        "solution",
+        "example",
+        "examples",
+        # Adjectives and adverbs
+        "here",
+        "there",
+        "just",
+        "only",
+        "also",
+        "well",
+        "good",
+        "best",
+        "like",
+        "need",
+        "want",
+        "not",
+        "very",
+        "really",
+        "actually",
+        "basically",
+        # Common short words that aren't libraries
+        "app",
+        "api",
+        "url",
+        "key",
+        "val",
+        "var",
+        "arg",
+        "args",
+        "def",
+        "self",
+        "true",
+        "false",
+        "none",
+        "null",
+        "new",
+        "old",
+        "main",
+        "init",
+        "look",
+        "looking",
+        "way",
+        "how",
+    }
+
+    # Collect evidence from top findings
+    recommendations = []
+    libraries_mentioned = []
+    solutions_found = []
+
+    for f in findings[:5]:
+        title = f.get("title", "")
+        solution = f.get("solution", "")
+        snippet = f.get("snippet", "")
+        source = f.get("source", "")
+        answer_body = f.get("answer_body", "")  # From SO enrichment
+
+        content = f"{title} {solution} {snippet} {answer_body}".lower()
+
+        # Extract library/tool names - look for specific patterns
+        # 1. Package names (lowercase with hyphens): regex-toolkit, python-regex
+        pkg_matches = re.findall(r"\b([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\b", content)
+        for pkg in pkg_matches:
+            if pkg not in recommendations and len(pkg) > 3:
+                recommendations.append(pkg)
+
+        # 2. CamelCase names: PyRegex, FastRegex
+        camel_matches = re.findall(
+            r"\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b", f"{solution} {snippet}"
+        )
+        for lib in camel_matches:
+            if lib.lower() not in IGNORE_WORDS and lib not in libraries_mentioned:
+                libraries_mentioned.append(lib)
+
+        # 3. Look for explicit "use X" or "try X" where X looks like a tool name
+        use_matches = re.findall(
+            r"(?:use|try|install|recommend|suggest)\s+(?:`)?([a-zA-Z][a-zA-Z0-9_-]{2,20})(?:`)?",
+            content,
+            re.IGNORECASE,
+        )
+        for m in use_matches:
+            if m.lower() not in IGNORE_WORDS and m not in recommendations:
+                # Validate it looks like a real tool/library name
+                if re.match(r"^[a-zA-Z][a-zA-Z0-9_-]*$", m) and len(m) >= 3:
+                    recommendations.append(m)
+
+        # Extract solution statements
+        if solution and len(solution) > 30:
+            # Clean and get first meaningful part
+            clean_sol = re.sub(r"<[^>]+>", "", solution)
+            clean_sol = re.sub(r"\s+", " ", clean_sol).strip()
+            if clean_sol and not clean_sol.startswith(("```", "|", "-")):
+                solutions_found.append(clean_sol[:150])
+
+    # Build the quick answer - prioritize meaningful summaries over random library names
+
+    # Extract topic keywords to validate recommendations are relevant
+    topic_lower = topic.lower()
+    topic_words = set(re.findall(r"\b\w{4,}\b", topic_lower))
+
+    # Filter recommendations to only those that appear in relevant content
+    relevant_recs = []
+    for rec in recommendations:
+        rec_lower = rec.lower()
+        # Check if this recommendation appears in content that's actually about the topic
+        for f in findings[:3]:
+            f_content = f"{f.get('title', '')} {f.get('snippet', '')}".lower()
+            if rec_lower in f_content:
+                # Verify the finding is actually relevant to the topic
+                if any(tw in f_content for tw in topic_words):
+                    relevant_recs.append(rec)
+                    break
+
+    parts = []
+
+    # Only show recommendations if they're actually relevant to the topic
+    if relevant_recs and len(relevant_recs[0]) > 3:
+        top_recs = relevant_recs[:2]
+        if len(top_recs) == 1:
+            parts.append(f"**{top_recs[0]}** is commonly mentioned")
+        else:
+            parts.append(f"Options mentioned: **{', '.join(top_recs)}**")
+
+    # If we have CamelCase library names, they're more likely to be real
+    elif libraries_mentioned:
+        # Filter to only libraries in topic-relevant content
+        relevant_libs = []
+        for lib in libraries_mentioned[:5]:
+            for f in findings[:3]:
+                f_content = f"{f.get('title', '')} {f.get('snippet', '')}".lower()
+                if lib.lower() in f_content and any(
+                    tw in f_content for tw in topic_words
+                ):
+                    relevant_libs.append(lib)
+                    break
+        if relevant_libs:
+            parts.append(f"**{', '.join(relevant_libs[:2])}** mentioned in discussions")
+
+    # Add context from the most relevant solution
+    if solutions_found:
+        for sol in solutions_found:
+            # Skip code-like content
+            if sol.startswith(("```", "import ", "from ", "def ", "class ", "|", "-")):
+                continue
+            # Skip very short or generic content
+            if len(sol) < 30:
+                continue
+            # Get first meaningful sentence
+            sentences = re.split(r"[.!?]\s+", sol)
+            for sent in sentences:
+                sent = sent.strip()
+                if len(sent) > 25 and len(sent) < 200:
+                    parts.append(sent)
+                    break
+            if len(parts) >= 2:
+                break
+
+    # Fallback: summarize from first relevant finding
+    if not parts:
+        for f in findings[:3]:
+            # Check relevance
+            f_content = f"{f.get('title', '')} {f.get('snippet', '')}".lower()
+            if not any(tw in f_content for tw in topic_words):
+                continue
+
+            first_sol = f.get("solution") or f.get("snippet", "")
+            if first_sol:
+                clean = re.sub(r"<[^>]+>", "", first_sol)
+                clean = re.sub(r"\s+", " ", clean).strip()
+                sentences = re.split(r"[.!?]\s+", clean)
+                for s in sentences[:3]:
+                    s = s.strip()
+                    if len(s) > 30 and not s.startswith(
+                        ("```", "import ", "|", "-", "[")
+                    ):
+                        parts.append(s[:180])
+                        break
+            if parts:
+                break
+
+    if not parts:
+        return None
+
+    result = ". ".join(parts[:2])  # Max 2 parts
+    if len(result) > 280:
+        result = result[:280].rsplit(" ", 1)[0] + "..."
+
+    return result
 
 
 def get_weighted_score(item: Dict[str, Any], source: str) -> float:
@@ -2698,14 +3246,7 @@ async def synthesize_with_llm(
             # IMPROVEMENT 2: Smart issue/solution extraction from snippet
             issue = _extract_issue_from_content(title, snippet, query)
             solution = _extract_solution_from_content(snippet, title)
-            code = ""
-
-            # Try to extract code blocks from snippet
-            code_matches = re.findall(
-                r"```[\w]*\n(.*?)\n```|`([^`]+)`", snippet, re.DOTALL
-            )
-            if code_matches:
-                code = "\n".join([m[0] or m[1] for m in code_matches])
+            code = _extract_code_block(snippet, item.get("answer_body", ""))
 
             # Quality score - keep it informational, not punitive
             # The LLM can use relevance_score to judge usefulness
@@ -2934,17 +3475,25 @@ def render_masterclass_markdown(
     lines.append("")
 
     # ═══════════════════════════════════════════════════════════════════════
-    # SUMMARY - Quick takeaway
+    # SUMMARY - Top sources overview (LLM will synthesize the actual answer)
     # ═══════════════════════════════════════════════════════════════════════
     if findings:
-        top = findings[0]
-        summary = top.get("solution", "")
-        if summary:
-            clean = re.sub(
-                r"<[^>]+>", "", summary.replace("\\n", " ").replace("&#x27;", "'")
+        # Show what sources we found - let the LLM reading this synthesize the answer
+        top_sources = []
+        seen_domains = set()
+        for f in findings[:5]:
+            url = f.get("url", "")
+            if url:
+                domain = re.search(r"https?://(?:www\.)?([^/]+)", url)
+                if domain:
+                    d = domain.group(1).split(".")[0]  # stackoverflow, reddit, etc
+                    if d not in seen_domains:
+                        seen_domains.add(d)
+                        top_sources.append(d)
+        if top_sources:
+            lines.append(
+                f"> **Top sources:** {', '.join(top_sources[:4])} — see findings below for details"
             )
-            clean = re.sub(r"\s+", " ", clean).strip()[:180]
-            lines.append(f"> **Quick Answer:** {clean}...")
             lines.append("")
 
     lines.append("---")
@@ -3018,9 +3567,13 @@ def render_masterclass_markdown(
             # Problem if meaningful (now that we removed "Related to:" prefix)
             issue = f.get("issue", "")
             if issue and issue != "Not specified" and len(issue) > 15:
-                clean_issue = re.sub(r"<[^>]+>", "", issue.replace("\\n", " "))[:120]
+                clean_issue = re.sub(r"<[^>]+>", "", issue.replace("\\n", " "))
+                clean_issue = _truncate_at_sentence(clean_issue, 150)
                 # Only show if not just repeating the title
-                if clean_issue.lower() != title.lower()[: len(clean_issue)]:
+                if (
+                    clean_issue
+                    and clean_issue.lower() != title.lower()[: len(clean_issue)]
+                ):
                     card.append(f"**Issue:** {clean_issue}")
                     card.append("")
 
@@ -3029,9 +3582,11 @@ def render_masterclass_markdown(
             if solution:
                 clean_sol = solution.replace("\\n", "\n").replace("&#x27;", "'")
                 clean_sol = re.sub(r"<[^>]+>", "", clean_sol)
-                clean_sol = re.sub(r"\s+", " ", clean_sol).strip()[:300]
-                card.append(f"**Solution:** {clean_sol}")
-                card.append("")
+                clean_sol = re.sub(r"\s+", " ", clean_sol).strip()
+                clean_sol = _truncate_at_sentence(clean_sol, 300)
+                if clean_sol:
+                    card.append(f"**Solution:** {clean_sol}")
+                    card.append("")
 
             # Code in collapsible
             code = f.get("code", "")
@@ -4299,7 +4854,104 @@ async def _community_search_impl(params) -> str:
                 "shape_stats": shape_stats,
             }
 
-            if params.response_format == ResponseFormat.MARKDOWN:
+            if params.response_format == ResponseFormat.RAW:
+                # RAW MODE: Return ALL data for LLM to synthesize beautifully
+                # This bypasses our crappy regex synthesis and lets the LLM do what it's good at
+
+                all_results = []
+                for source_name, items in source_lists.items():
+                    for item in items:
+                        # Include FULL content, not truncated
+                        result_entry = {
+                            "source": source_name,
+                            "title": item.get("title", ""),
+                            "url": item.get("url", item.get("link", "")),
+                            "full_content": item.get(
+                                "body",
+                                item.get(
+                                    "snippet",
+                                    item.get("selftext", item.get("description", "")),
+                                ),
+                            ),
+                            "score": item.get("score", item.get("ups", 0)),
+                            "comments": item.get(
+                                "num_comments", item.get("answer_count", 0)
+                            ),
+                            "date": item.get(
+                                "created_utc",
+                                item.get("creation_date", item.get("published", "")),
+                            ),
+                            "author": item.get(
+                                "author", item.get("owner", {}).get("display_name", "")
+                            ),
+                            "tags": item.get("tags", []),
+                            # Include accepted answer for SO if we fetched it
+                            "accepted_answer": item.get("accepted_answer_body", ""),
+                            # Keep raw item for any fields we missed
+                            "_raw": {
+                                k: v
+                                for k, v in item.items()
+                                if k not in ["body", "selftext", "description"]
+                            },
+                        }
+                        all_results.append(result_entry)
+
+                # Sort by engagement (score + comments)
+                all_results.sort(
+                    key=lambda x: (x.get("score", 0) or 0)
+                    + (x.get("comments", 0) or 0) * 2,
+                    reverse=True,
+                )
+
+                raw_response = {
+                    "_llm_synthesis_required": {
+                        "CRITICAL": "YOU MUST SYNTHESIZE THIS DATA INTO A BEAUTIFUL RESPONSE. DO NOT DUMP RAW JSON TO THE USER.",
+                        "what_you_received": "Raw community research data from Stack Overflow, GitHub, Reddit, and other developer forums.",
+                        "what_you_must_do": "Read through ALL the results below and create a well-structured, actionable answer for the user.",
+                        "output_format": {
+                            "1_title": "Start with a clear, confident statement of the solution (or top 2-3 if there are competing approaches)",
+                            "2_solution": "Present the BEST solution with actual code examples extracted from the results. Use proper markdown code blocks.",
+                            "3_why_it_works": "Briefly explain why this solution works, citing community consensus (e.g., '47 upvotes on Stack Overflow', 'confirmed by 3 different sources')",
+                            "4_alternatives": "Other valid approaches with their tradeoffs",
+                            "5_gotchas": "Common pitfalls the community has identified",
+                            "6_pearls_and_hacks": "Clever tricks, shortcuts, pro tips found in the results - the 'oh that's nice' stuff. Related solutions for adjacent problems.",
+                            "7_related_insights": "Other relevant findings: debugging tips, useful tools mentioned, config tweaks, performance tricks, 'while you're at it' suggestions",
+                            "8_sources": "End with 'Sources:' linking to the 2-4 most helpful discussions",
+                        },
+                        "style": {
+                            "tone": "Professional, confident, helpful - like a senior developer explaining to a colleague",
+                            "formatting": "Use headers (##), bullet points, and code blocks. Make it scannable.",
+                            "length": "As long as needed to fully answer the question. Don't truncate important details.",
+                            "code": "ALWAYS include code examples if they exist in the results. This is the most valuable part.",
+                        },
+                        "DO_NOT": [
+                            "DO NOT show raw JSON to the user",
+                            "DO NOT say 'here are the search results' - synthesize them",
+                            "DO NOT be wishy-washy - give a clear recommendation",
+                            "DO NOT skip code examples - extract them from the content",
+                            "DO NOT ignore high-scored answers - they represent community consensus",
+                        ],
+                    },
+                    "query": {
+                        "topic": params.topic,
+                        "language": params.language,
+                        "goal": params.goal,
+                        "current_setup": params.current_setup,
+                    },
+                    "search_summary": {
+                        "total_results": len(all_results),
+                        "sources_searched": list(source_lists.keys()),
+                        "source_counts": {
+                            src: len(items) for src, items in source_lists.items()
+                        },
+                    },
+                    "results": all_results,
+                }
+                result = json.dumps(
+                    raw_response, indent=2, ensure_ascii=False, default=str
+                )
+
+            elif params.response_format == ResponseFormat.MARKDOWN:
                 result = render_masterclass_markdown(
                     params.topic,
                     params.language,
