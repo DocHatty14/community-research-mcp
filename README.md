@@ -1,5 +1,7 @@
 # Community Research MCP
 
+![download](https://github.com/user-attachments/assets/0cf397e9-cc69-4ee7-8c45-6c0ad7a3b676)
+
 > **Find real solutions from developers who've solved your problem before.**
 
 An MCP server that searches Stack Overflow, GitHub Issues, Hacker News, and other developer communities to find battle-tested solutions, workarounds, and implementation patterns.
