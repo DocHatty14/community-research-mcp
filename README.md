@@ -2,6 +2,8 @@
 
 <div align="center">
 
+![download](https://github.com/user-attachments/assets/20f7470f-ae0c-4010-8bdf-e07da6a3f769)
+
 **Where the official documentation ends and actual street-smart solutions begin.**
 
 *A Model Context Protocol server that finds real fixes from real developers — the workarounds, hacks, and "this finally worked for me" solutions from Stack Overflow, GitHub Issues, Reddit, and forums.*
