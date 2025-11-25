@@ -94,7 +94,7 @@ async def search(
 
     params = {
         "q": search_query,
-        "sort": "reactions",
+        "sort": "best-match",  # Changed from "reactions" to prioritize relevance
         "order": "desc",
         "per_page": min(max_results, 100),
     }

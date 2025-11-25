@@ -18,41 +18,45 @@ __all__ = ["QualityScorer", "SCORING_PRESETS"]
 SCORING_PRESETS: dict[str, dict[str, Any]] = {
     "balanced": {
         "weights": {
-            "source": 0.22,
-            "community": 0.23,
-            "recency": 0.20,
-            "specificity": 0.20,
-            "evidence": 0.15,
+            "relevance": 0.30,  # NEW: Prioritize topical relevance
+            "source": 0.18,
+            "community": 0.18,
+            "recency": 0.12,
+            "specificity": 0.12,
+            "evidence": 0.10,
         },
         "source_boost": {},
     },
     "bugfix": {
         "weights": {
-            "source": 0.20,
-            "community": 0.18,
-            "recency": 0.17,
-            "specificity": 0.25,
-            "evidence": 0.20,
+            "relevance": 0.28,
+            "source": 0.18,
+            "community": 0.14,
+            "recency": 0.12,
+            "specificity": 0.18,
+            "evidence": 0.10,
         },
         "source_boost": {"stackoverflow": 1.08, "github": 1.05},
     },
     "performance": {
         "weights": {
-            "source": 0.18,
-            "community": 0.25,
-            "recency": 0.17,
-            "specificity": 0.15,
-            "evidence": 0.25,
+            "relevance": 0.28,
+            "source": 0.15,
+            "community": 0.20,
+            "recency": 0.12,
+            "specificity": 0.10,
+            "evidence": 0.15,
         },
         "source_boost": {"github": 1.08, "hackernews": 1.05},
     },
     "migration": {
         "weights": {
-            "source": 0.25,
-            "community": 0.18,
-            "recency": 0.25,
-            "specificity": 0.17,
-            "evidence": 0.15,
+            "relevance": 0.25,
+            "source": 0.20,
+            "community": 0.15,
+            "recency": 0.20,
+            "specificity": 0.10,
+            "evidence": 0.10,
         },
         "source_boost": {},
     },
@@ -92,9 +96,34 @@ class QualityScorer:
         self.weights = config["weights"]
         self.source_boost = config["source_boost"]
 
-    def score(self, finding: dict[str, Any]) -> int:
-        """Calculate quality score (0-100) for a finding."""
+    def score(self, finding: dict[str, Any], query_terms: set[str] = None) -> int:
+        """Calculate quality score (0-100) for a finding.
+
+        Args:
+            finding: The finding dict with title, snippet, source, etc.
+            query_terms: Set of query terms for relevance scoring (optional)
+        """
         total = 0.0
+
+        # Relevance scoring (NEW - most important factor)
+        if self.weights.get("relevance", 0) > 0:
+            relevance = finding.get("relevance_score", 0)
+            if relevance == 0 and query_terms:
+                # Calculate relevance if not already set
+                text = (
+                    f"{finding.get('title', '')} {finding.get('snippet', '')}".lower()
+                )
+                text_terms = set(re.findall(r"\w+", text))
+                key_terms = {t for t in query_terms if len(t) >= 4}
+
+                if key_terms:
+                    key_matches = len(key_terms.intersection(text_terms))
+                    relevance = min(100, (key_matches / len(key_terms)) * 100)
+                else:
+                    all_matches = len(query_terms.intersection(text_terms))
+                    relevance = min(100, (all_matches / max(len(query_terms), 1)) * 100)
+
+            total += (relevance / 100) * self.weights["relevance"] * 100
 
         # Source authority
         source = finding.get("source", "").split(":")[0].lower()
@@ -140,11 +169,11 @@ class QualityScorer:
         )
         total += (evidence / 100) * self.weights["evidence"] * 100
 
-        # Penalties
+        # Penalties for missing essential elements
         if not has_code:
-            total -= 8
-        if not has_link:
             total -= 5
+        if not has_link:
+            total -= 3
 
         # Source boost
         total *= self.source_boost.get(source, 1.0)

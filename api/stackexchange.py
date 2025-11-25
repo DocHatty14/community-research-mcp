@@ -206,7 +206,9 @@ async def search(
                     "view_count": item.get("view_count", 0),
                     "tags": item.get("tags", []),
                     "snippet": (item.get("body") or "")[:1000],
-                    "source": f"stackexchange:{site}",
+                    "source": site
+                    if site == "stackoverflow"
+                    else f"stackexchange:{site}",
                 }
                 for item in data.get("items", [])[:max_results]
             ]

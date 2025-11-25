@@ -694,7 +694,7 @@ def _generate_query_variations(
     if goal:
         variations.append(f"{language} {topic} {goal}")
 
-    # Variation 4: Problem-focused phrasing (how community posts are titled)
+    # Variation 4: Problem-focused phrasing (ONLY if topic already indicates a problem)
     problem_indicators = [
         "error",
         "issue",
@@ -707,14 +707,23 @@ def _generate_query_variations(
     ]
     if any(ind in topic_lower for ind in problem_indicators):
         # Already problem-focused, add solution-seeking variation
-        variations.append(f"{language} {topic} fix solution workaround")
-    else:
-        # Add problem-seeking variation
-        variations.append(f"{language} {topic} issue problem")
+        variations.append(f"{language} {topic} fix solution")
+    # REMOVED: Don't add "issue problem" to non-problem queries - this causes noise!
 
-    # Variation 5: Community-style phrasing (how people actually ask)
+    # Variation 5: Community-style phrasing (only for how-to questions)
     if "how to" not in topic_lower and "why" not in topic_lower:
-        variations.append(f"how to {topic} {language}")
+        # Only add "how to" if the topic sounds like a task/action
+        action_words = [
+            "implement",
+            "create",
+            "build",
+            "use",
+            "setup",
+            "configure",
+            "install",
+        ]
+        if any(word in topic_lower for word in action_words):
+            variations.append(f"how to {topic} {language}")
 
     # Dedupe while preserving order
     seen = set()
@@ -853,27 +862,32 @@ def enrich_query(
     # Build primary enriched query
     base = f"{language} {topic}".strip()
 
-    # Add goal if provided to narrow down results
+    # Keep query focused - don't add generic suffixes that cause noise
+    # The topic itself should be specific enough
+    enriched_query = base
+
+    # Only add goal terms if they're specific and technical
     if goal:
         goal_lower = goal.lower()
-        if any(word in goal_lower for word in ["implement", "build", "create", "add"]):
-            enriched_query = f"{base} implementation"
-        elif any(word in goal_lower for word in ["fix", "debug", "error", "issue"]):
-            enriched_query = f"{base} fix solution"
-        elif any(word in goal_lower for word in ["learn", "understand", "how"]):
-            enriched_query = f"{base} guide"
-        elif any(
-            word in goal_lower for word in ["best practice", "recommended", "proper"]
-        ):
-            enriched_query = f"{base} best practices"
-        elif any(
-            word in goal_lower for word in ["performance", "optimize", "speed", "fast"]
-        ):
-            enriched_query = f"{base} optimization performance"
-        else:
-            enriched_query = f"{base} {goal}"
-    else:
-        enriched_query = base
+        # Extract technical terms from goal (4+ chars, not common words)
+        common_words = {
+            "find",
+            "best",
+            "good",
+            "want",
+            "need",
+            "looking",
+            "search",
+            "help",
+            "practice",
+            "practices",
+        }
+        goal_terms = [
+            w for w in goal_lower.split() if len(w) >= 4 and w not in common_words
+        ]
+        if goal_terms:
+            # Add only the first 2 specific terms from goal
+            enriched_query = f"{base} {' '.join(goal_terms[:2])}"
 
     # Re-emphasize key frameworks if detected
     if emphasized_frameworks and len(emphasized_frameworks) <= 2:
@@ -2669,10 +2683,17 @@ async def synthesize_with_llm(
                 * 30  # 30% weight on all terms
             )
 
-            # NOTE: We intentionally do NOT filter out low-relevance results here.
-            # The LLM consuming this data is smart enough to identify what's useful.
-            # Over-filtering on the server side loses potentially valuable edge cases.
-            # Instead, we sort by relevance so best matches appear first.
+            # STRICT FILTERING: Require at least ONE key term from the query
+            # Key terms are 4+ char words like "regex", "library" - not "best", "the"
+            # This ensures results are actually about the topic
+            if len(key_matches) == 0:
+                # No key terms matched - skip unless very high general relevance
+                if relevance_score < 50:
+                    continue
+
+            # Even with key term matches, require minimum relevance threshold
+            if relevance_score < 20:
+                continue
 
             # IMPROVEMENT 2: Smart issue/solution extraction from snippet
             issue = _extract_issue_from_content(title, snippet, query)
@@ -2949,7 +2970,24 @@ def render_masterclass_markdown(
             card: List[str] = []
             score = f.get("quality_score", f.get("score", 0))
             relevance = f.get("relevance_score", 0)
-            source = f.get("source", "web").replace("_", " ").title()
+            raw_source = f.get("source", "web")
+            # Map source names to display names
+            source_display_map = {
+                "stackoverflow": "Stack Overflow",
+                "stackexchange:stackoverflow": "Stack Overflow",
+                "reddit": "Reddit",
+                "github": "GitHub",
+                "hackernews": "Hacker News",
+                "lobsters": "Lobsters",
+                "discourse": "Discourse",
+                "brave": "Brave",
+                "tavily": "Tavily",
+                "serper": "Serper",
+                "firecrawl": "Firecrawl",
+            }
+            source = source_display_map.get(
+                raw_source, raw_source.replace("_", " ").title()
+            )
             url = f.get("url", "")
             title = f.get("title", "Untitled")
 
